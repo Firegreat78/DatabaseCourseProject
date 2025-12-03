@@ -2,13 +2,23 @@
 from .models import *
 
 __all__ = [
-    "Base",
-    "DepositAccountOperationType",
-    "BrokerAccountOperationType",
-    "OfferType",
+    "DepositoryAccountOperationType",
+    "BrokerageAccountOperationType",
+    "ProposalType",
     "VerificationStatus",
     "Position",
     "Security",
     "Currency",
+    "EmploymentStatus",
     "Bank",
+    "User",
+    "Staff",
+    "Proposal",
+    "BrokerageAccount",
+    "DepositoryAccount",
+    "Dividend",
+    "Passport",
+    "BrokerageAccountHistory",
+    "DepositoryAccountHistory",
+    "DepositoryAccountBalance"
 ]

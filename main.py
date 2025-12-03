@@ -1,77 +1,48 @@
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session
-from core.config import DATABASE_URL
-
-from db.models import (
-    DepositAccountOperationType,
-    BrokerAccountOperationType,
-    OfferType,
-    VerificationStatus,
-    Position,
-    Security,
-    Currency,
-    Bank,
+from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from db.session import get_db
+from db.models.models import (
+    DepositoryAccountOperationType, BrokerageAccountOperationType,
+    ProposalType, VerificationStatus, Position, Security, Currency, Bank
 )
 
-engine = create_engine(DATABASE_URL, echo=False, future=True)
+app = FastAPI()
+
+# Разрешаем React dev сервер
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+TABLES = {
+    "depository_account_operation_type": DepositoryAccountOperationType,
+    "brokerage_account_operation_type": BrokerageAccountOperationType,
+    "proposal_type": ProposalType,
+    "verification_status": VerificationStatus,
+    "position": Position,
+    "security": Security,
+    "currency": Currency,
+    "bank": Bank,
+}
 
 
-# Список всех справочников для красивого вывода
-TABLES = [
-    ("Тип операции депозитарного счёта", DepositAccountOperationType),
-    ("Тип операции брокерского счёта", BrokerAccountOperationType),
-    ("Тип предложения", OfferType),
-    ("Статус верификации", VerificationStatus),
-    ("Должности", Position),
-    ("Список ценных бумаг", Security),
-    ("Список валют", Currency),
-    ("Банк", Bank),
-]
+@app.get("/api/{table_name}")
+async def get_table_data(table_name: str, db: AsyncSession = Depends(get_db)):
+    model = TABLES.get(table_name)
+    if not model:
+        return {"error": "Table not found"}
+    print(f"before result model={model}")
+    result = await db.execute(select(model))
+    print(f"after result model={model}")
+    rows = result.scalars().all()
 
-
-def print_all_data():
-    with Session(engine) as session:
-        print("=" * 80)
-        print("ПРОВЕРКА ДАННЫХ В СПРАВОЧНИКАХ (заполнено через pgAdmin)")
-        print("=" * 80)
-
-        for rus_name, model in TABLES:
-            records = session.query(model).order_by(model.id).all()
-
-            print(f"\n→ {rus_name}  ({len(records)} записей)")
-            print("-" * 60)
-
-            if not records:
-                print("    (пусто)")
-                continue
-
-            # Выводим только те поля, которые есть и имеют смысл показать
-            for rec in records:
-                if isinstance(rec, Currency):
-                    print(f"    {rec.id:>3} | {rec.name}")
-                elif isinstance(rec, Security):
-                    print(f"    {rec.id:>3} | {rec.name[:50]:50} | ISIN: {rec.isin} | Дивиденды: {rec.pays_dividends}")
-                elif isinstance(rec, Bank):
-                    print(f"    {rec.id:>3} | {rec.name[:40]:40} | ИНН: {rec.inn} | до {rec.license_expiry_date}")
-                elif isinstance(rec, Position):
-                    print(f"    {rec.id:>3} | {rec.name:20} | ЗП: {rec.salary:>10} ₽ | {rec.access_level}")
-                else:
-                    # Для всех остальных — просто id и название
-                    name_field = getattr(rec, "type_name", None) or getattr(rec, "status_name", None) or "?"
-                    print(f"    {rec.id:>3} | {name_field}")
-
-        print("\n" + "="*80)
-        print("Всё работает! Данные из pgAdmin успешно читаются через SQLAlchemy")
-        print("="*80)
-
-
-if __name__ == "__main__":
-    try:
-        # Простая проверка подключения
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        print("Подключение к базе успешно!")
-        print_all_data()
-    except Exception as e:
-        print("ОШИБКА ПОДКЛЮЧЕНИЯ:")
-        print(e)
+    data = [
+        {k: v for k, v in row.__dict__.items() if k != "_sa_instance_state"}
+        for row in rows
+    ]
+    return data
