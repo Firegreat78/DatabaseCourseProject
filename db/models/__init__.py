@@ -2,11 +2,11 @@
 from .models import *
 
 __all__ = [
+    "Base",
     "DepositoryAccountOperationType",
     "BrokerageAccountOperationType",
     "ProposalType",
     "VerificationStatus",
-    "Position",
     "Security",
     "Currency",
     "EmploymentStatus",
@@ -20,5 +20,7 @@ __all__ = [
     "Passport",
     "BrokerageAccountHistory",
     "DepositoryAccountHistory",
-    "DepositoryAccountBalance"
+    "DepositoryAccountBalance",
+    "PriceHistory",
+    "CurrencyRates"
 ]

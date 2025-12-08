@@ -1,8 +1,8 @@
 # db/models/models.py
 from __future__ import annotations
 
-from sqlalchemy import String, Integer, Numeric, Boolean, Date, ForeignKey, Column, ForeignKeyConstraint
-from sqlalchemy.orm import DeclarativeBase, mapped_column, registry, Mapped, relationship
+from sqlalchemy import String, Integer, Numeric, Boolean, Date, ForeignKey, Column, ForeignKeyConstraint, TIMESTAMP
+from sqlalchemy.orm import DeclarativeBase, registry, Mapped, relationship
 
 # Создаём реестр (можно и без него, но с ним типы работают лучше)
 reg = registry()
@@ -10,6 +10,7 @@ reg = registry()
 
 class Base(DeclarativeBase):
     registry = reg
+
 
 class DepositoryAccountOperationType(Base):
     __tablename__ = "Тип операции депозитарного счёта"
@@ -51,18 +52,6 @@ class VerificationStatus(Base):
         return f"<VerificationStatus(id={self.id}, status='{self.status}')>"
 
 
-class Position(Base):
-    __tablename__ = "Должности"
-
-    id = Column("ID должности", Integer, primary_key=True, nullable=False)
-    name = Column("Наименование", String(20), nullable=False)
-    rights_level = Column("Уровень прав", String(30), nullable=False)
-    salary = Column("Заработная плата", Numeric(12, 2), nullable=False)
-
-    def __repr__(self):
-        return f"<Position(id={self.id}, name='{self.name}', rights_level='{self.rights_level}', salary={self.salary})>"
-
-
 class Security(Base):
     __tablename__ = "Список ценных бумаг"
 
@@ -71,9 +60,12 @@ class Security(Base):
     lot_size = Column("Размер лота", Numeric(12, 2), nullable=False)
     isin = Column("ISIN", String(40), nullable=False)
     dividend_payment = Column("Выплата дивидендов", Boolean, nullable=False)
+    currency_id = Column("ID валюты", Integer, ForeignKey("Список валют.ID валюты", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
+
+    currency = relationship("Currency", backref="securities")
 
     def __repr__(self):
-        return f"<Security(id={self.id}, name='{self.name}', lot_size={self.lot_size}, isin='{self.isin}', dividend_payment={self.dividend_payment})>"
+        return f"<Security(id={self.id}, name='{self.name}', lot_size={self.lot_size}, isin='{self.isin}', dividend_payment={self.dividend_payment}, currency_id={self.currency_id})>"
 
 
 class Currency(Base):
@@ -133,14 +125,13 @@ class Staff(Base):
     contract_number = Column("Номер трудового договора", String(40), nullable=False)
     login = Column("Логин", String(30), nullable=False)
     password = Column("Пароль", String(60), nullable=False)
-    position_id = Column("ID должности", Integer, ForeignKey("Должности.ID должности", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
+    rights_level = Column("Уровень прав", String(30), nullable=False)
     employment_status_id = Column("ID статуса трудоустройства", Integer, ForeignKey("Статус трудоустройства.ID статуса трудоустройства", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
 
-    position = relationship("Position", backref="staff_members")
     employment_status = relationship("EmploymentStatus", backref="staff_members")
 
     def __repr__(self):
-        return f"<Staff(id={self.id}, contract_number='{self.contract_number}', login='{self.login}', position_id={self.position_id}, employment_status_id={self.employment_status_id})>"
+        return f"<Staff(id={self.id}, contract_number='{self.contract_number}', login='{self.login}', rights_level='{self.rights_level}', employment_status_id={self.employment_status_id})>"
 
 
 class Proposal(Base):
@@ -197,14 +188,12 @@ class Dividend(Base):
     id = Column("ID дивидинда", Integer, primary_key=True, nullable=False)
     date = Column("Дата", Date, nullable=False)
     amount = Column("Сумма", Numeric(12,2), nullable=False)
-    currency_id = Column("ID валюты", Integer, ForeignKey("Список валют.ID валюты", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
     security_id = Column("ID ценной бумаги", Integer, ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
 
-    currency = relationship("Currency", backref="dividends")
     security = relationship("Security", backref="dividends")
 
     def __repr__(self):
-        return f"<Dividend(id={self.id}, date={self.date}, amount={self.amount}, currency_id={self.currency_id}, security_id={self.security_id})>"
+        return f"<Dividend(id={self.id}, date={self.date}, amount={self.amount}, security_id={self.security_id})>"
 
 
 class Passport(Base):
@@ -223,15 +212,12 @@ class Passport(Base):
     issue_date = Column("Дата выдачи", Date, nullable=False)
     issued_by = Column("Кем выдан", String(50), nullable=False)
     is_actual = Column("Актуальность", Boolean, nullable=False)
-
-    user_id = Column("ID пользователя", Integer, ForeignKey("Пользователь.ID пользователя", ondelete="RESTRICT", onupdate="RESTRICT"))
-    staff_id = Column("ID сотрудника", Integer, ForeignKey("Персонал.ID сотрудника", ondelete="RESTRICT", onupdate="RESTRICT"))
+    user_id = Column("ID пользователя", Integer, ForeignKey("Пользователь.ID пользователя", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
 
     user = relationship("User", backref="passports")
-    staff = relationship("Staff", backref="passports")
 
     def __repr__(self):
-        return f"<Passport(id={self.id}, last_name='{self.last_name}', first_name='{self.first_name}', user_id={self.user_id}, staff_id={self.staff_id})>"
+        return f"<Passport(id={self.id}, last_name='{self.last_name}', first_name='{self.first_name}', user_id={self.user_id})>"
 
 
 class BrokerageAccountHistory(Base):
@@ -239,23 +225,14 @@ class BrokerageAccountHistory(Base):
 
     id = Column("ID операции бр. счёта", Integer, primary_key=True, nullable=False)
     amount = Column("Сумма операции", Numeric(12, 2), nullable=False)
-
+    time = Column("Время", TIMESTAMP(6), nullable=False)
     brokerage_account_id = Column("ID брокерского счёта", Integer, nullable=False)
-
-    currency_id = Column(
-        "ID валюты",
-        Integer,
-        ForeignKey("Список валют.ID валюты", ondelete="RESTRICT", onupdate="RESTRICT"),
-        nullable=False,
-    )
-
     staff_id = Column(
         "ID сотрудника",
         Integer,
         ForeignKey("Персонал.ID сотрудника", ondelete="RESTRICT", onupdate="RESTRICT"),
         nullable=False,
     )
-
     operation_type_id = Column(
         "ID типа операции бр. счёта",
         Integer,
@@ -275,9 +252,7 @@ class BrokerageAccountHistory(Base):
     )
 
     brokerage_account = relationship("BrokerageAccount", backref="history")
-    currency = relationship("Currency", backref="brokerage_operations")
     staff = relationship("Staff", backref="brokerage_operations")
-
     operation_type = relationship(
         "BrokerageAccountOperationType",
         backref="operations",
@@ -289,34 +264,31 @@ class BrokerageAccountHistory(Base):
     )
 
     def __repr__(self):
-        return f"<BrokerageAccountHistory(id={self.id}, amount={self.amount}, brokerage_account_id={self.brokerage_account_id})>"
+        return f"<BrokerageAccountHistory(id={self.id}, amount={self.amount}, brokerage_account_id={self.brokerage_account_id}, time={self.time})>"
+
 
 class DepositoryAccountHistory(Base):
     __tablename__ = "История операций деп. счёта"
 
     id = Column("ID операции деп. счёта", Integer, primary_key=True, nullable=False)
     amount = Column("Сумма операции", Numeric(12, 2), nullable=False)
-
+    time = Column("Время", TIMESTAMP(6), nullable=False)
     depository_account_id = Column("ID депозитарного счёта", Integer, nullable=False)
     user_id = Column("ID пользователя", Integer, nullable=False)
-
     security_id = Column(
         "ID ценной бумаги",
         Integer,
         ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="RESTRICT", onupdate="RESTRICT"),
         nullable=False,
     )
-
     staff_id = Column(
         "ID сотрудника",
         Integer,
         ForeignKey("Персонал.ID сотрудника", ondelete="RESTRICT", onupdate="RESTRICT"),
         nullable=False,
     )
-
     brokerage_operation_id = Column("ID операции бр. счёта", Integer, nullable=False)
     brokerage_account_id = Column("ID брокерского счёта", Integer, nullable=False)
-
     operation_type_id = Column(
         "ID типа операции деп. счёта",
         Integer,
@@ -334,9 +306,7 @@ class DepositoryAccountHistory(Base):
             onupdate="CASCADE",
             name="Relationship15"
         ),
-
         # FK: (ID операции бр. счёта, ID брокерского счёта)
-        # !!! MAIN FIX: use table + column objects instead of a dotted string
         ForeignKeyConstraint(
             ["ID операции бр. счёта", "ID брокерского счёта"],
             [
@@ -366,7 +336,7 @@ class DepositoryAccountHistory(Base):
     def __repr__(self):
         return (
             f"<DepositoryAccountHistory(id={self.id}, amount={self.amount}, "
-            f"da_id={self.depository_account_id}, user_id={self.user_id})>"
+            f"da_id={self.depository_account_id}, user_id={self.user_id}, time={self.time})>"
         )
 
 
@@ -375,7 +345,6 @@ class DepositoryAccountBalance(Base):
 
     id = Column("ID баланса депозитарного счёта", Integer, primary_key=True, nullable=False)
     amount = Column("Сумма", Numeric(12,2), nullable=False)
-
     depository_account_id = Column("ID депозитарного счёта", Integer, nullable=False)
     user_id = Column("ID пользователя", Integer, nullable=False)
     security_id = Column("ID ценной бумаги", Integer, ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
@@ -395,3 +364,32 @@ class DepositoryAccountBalance(Base):
 
     def __repr__(self):
         return f"<DepositoryAccountBalance(id={self.id}, amount={self.amount}, da_id={self.depository_account_id}, user_id={self.user_id}, security_id={self.security_id})>"
+
+
+class PriceHistory(Base):
+    __tablename__ = "История цены"
+
+    id = Column("ID зап. ист. цены", Integer, primary_key=True, nullable=False)
+    time = Column("Время", TIMESTAMP(6), nullable=False)
+    open_price = Column("Цена открытия", Numeric(12,2), nullable=False)
+    close_price = Column("Цена закрытия", Numeric(12,2), nullable=False)
+    min_price = Column("Цена минимальная", Numeric(12,2), nullable=False)
+    max_price = Column("Цена максимальная", Numeric(12,2), nullable=False)
+    security_id = Column("ID ценной бумаги", Integer, ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
+
+    security = relationship("Security", backref="price_history")
+
+    def __repr__(self):
+        return f"<PriceHistory(id={self.id}, time={self.time}, open={self.open_price}, close={self.close_price}, security_id={self.security_id})>"
+
+
+class CurrencyRates(Base):
+    __tablename__ = "currency_rates"
+
+    id = Column("id", Integer, primary_key=True, nullable=False, autoincrement=True)
+    currency_code = Column("Код валюты", String(30), nullable=False)
+    rate = Column("Курс", Numeric(12,4), nullable=False)
+    time = Column("Время", TIMESTAMP(6), nullable=False)
+
+    def __repr__(self):
+        return f"<CurrencyRates(id={self.id}, currency_code='{self.currency_code}', rate={self.rate}, time={self.time})>"
