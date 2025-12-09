@@ -1,11 +1,16 @@
+import uvicorn
+
 from datetime import timezone, datetime
 
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Security
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from db.session import get_db
+from db.auth import decode_access_token
 from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash
 from pydantic import BaseModel, EmailStr, field_validator
 from db.models.models import (
@@ -32,6 +37,7 @@ from db.models.models import (
 )
 
 app = FastAPI()
+bearer_scheme = HTTPBearer()
 
 
 # Разрешаем React dev сервер
@@ -203,3 +209,11 @@ async def register_user(
         "login": new_user.login,
         "email": new_user.email,
     }
+
+def run():
+    # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
+    uvicorn.run("main:app", host="localhost", port=8000, reload=True)
+
+
+if __name__ == "__main__":
+    run()
