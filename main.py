@@ -122,10 +122,10 @@ class UserRegisterRequest(BaseModel):
 
 @app.post("/api/login/user", response_model=Token, summary="Вход пользователя")
 async def login_user(
-    form_data: LoginRequest,  # ✅ Исправлено: form_data: LoginRequest
+    form_data: LoginRequest,  # Исправлено: form_data: LoginRequest
     db: AsyncSession = Depends(get_db)
 ):
-    user = await authenticate_user(db, form_data.login, form_data.password)  # ✅ form_data
+    user = await authenticate_user(db, form_data.login, form_data.password)  # form_data
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -140,10 +140,10 @@ async def login_user(
 
 @app.post("/api/login/staff", response_model=Token, summary="Вход сотрудника")
 async def login_staff(
-    form_data: LoginRequest,  # ✅ Исправлено: form_data: LoginRequest
+    form_data: LoginRequest,  # Исправлено: form_data: LoginRequest
     db: AsyncSession = Depends(get_db)
 ):
-    staff = await authenticate_staff(db, form_data.login, form_data.password)  # ✅ form_data
+    staff = await authenticate_staff(db, form_data.login, form_data.password)  # form_data
     if not staff:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -158,7 +158,7 @@ async def login_staff(
 
 @app.post("/api/register/user", status_code=status.HTTP_201_CREATED, summary="Регистрация пользователя")
 async def register_user(
-    form_data: UserRegisterRequest,  # ✅ ИСПРАВЛЕНО: form_data: ...
+    form_data: UserRegisterRequest,  # ИСПРАВЛЕНО: form_data
     db: AsyncSession = Depends(get_db)
 ):
     # 1. Проверяем, не занят ли логин
@@ -190,11 +190,11 @@ async def register_user(
         password=hashed_password,
         email=form_data.email,
         registration_date=datetime.now(timezone.utc).date(),
-        verification_status_id=1,  # ← проверьте ID в вашей БД!
+        verification_status_id=1,  # проверьте ID в вашей БД!
     )
 
     db.add(new_user)
-    await db.commit()     # ✅ await — правильно для AsyncSession
+    await db.commit()     # await — правильно для AsyncSession
     await db.refresh(new_user)  # чтобы получить id после INSERT
 
     return {
