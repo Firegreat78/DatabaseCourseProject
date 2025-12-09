@@ -107,7 +107,7 @@ class User(Base):
 
     id = Column("ID пользователя", Integer, primary_key=True, nullable=False)
     email = Column("Электронная почта", String(40), nullable=False)
-    registration_date = Column("Дата регистрации", String(40), nullable=False)
+    registration_date = Column("Дата регистрации", Date, nullable=False)
     login = Column("Логин", String(30), nullable=False)
     password = Column("Пароль", String(60), nullable=False)
     verification_status_id = Column("ID статуса верификации", Integer, ForeignKey("Статус верификации.ID статуса верификации", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
