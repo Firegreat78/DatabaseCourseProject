@@ -1,3 +1,7 @@
+-- =========================
+-- 1) ТАБЛИЦЫ
+-- =========================
+
 DO $$ 
 DECLARE
     r RECORD;
@@ -10,6 +14,26 @@ BEGIN
     -- Drop all sequences (if not owned by tables)
     FOR r IN (SELECT sequencename, schemaname FROM pg_sequences WHERE schemaname NOT IN ('pg_catalog', 'information_schema')) LOOP
         EXECUTE 'DROP SEQUENCE IF EXISTS ' || quote_ident(r.schemaname) || '.' || quote_ident(r.sequencename);
+    END LOOP;
+END $$;
+
+-- Удаляет ВСЕ функции во всех схемах текущей базы
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN (
+        SELECT format('%I.%I(%s)',
+                      n.nspname,
+                      p.proname,
+                      pg_get_function_identity_arguments(p.oid)) AS func_sig
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+    )
+    LOOP
+        EXECUTE 'DROP FUNCTION IF EXISTS ' || r.func_sig || ' CASCADE';
     END LOOP;
 END $$;
 
@@ -26,7 +50,7 @@ Database: PostgreSQL 12
 
 CREATE TABLE "Паспорт"
 (
-  "ID паспорта" Integer NOT NULL,
+  "ID паспорта" Serial NOT NULL,
   "Фамилия" Character varying(40) NOT NULL,
   "Имя" Character varying(40) NOT NULL,
   "Отчество" Character varying(40) NOT NULL,
@@ -52,9 +76,9 @@ ALTER TABLE "Паспорт" ADD CONSTRAINT "Unique_Identifier16" PRIMARY KEY ("
 
 CREATE TABLE "Пользователь"
 (
-  "ID пользователя" Integer NOT NULL,
+  "ID пользователя" Serial NOT NULL,
   "Электронная почта" Character varying(40) NOT NULL,
-  "Дата регистрации" Character varying(40) NOT NULL,
+  "Дата регистрации" Date NOT NULL,
   "Логин" Character varying(30) NOT NULL,
   "Пароль" Character varying(60) NOT NULL,
   "ID статуса верификации" Integer NOT NULL
@@ -73,7 +97,7 @@ ALTER TABLE "Пользователь" ADD CONSTRAINT "Unique_Identifier9" PRIMA
 
 CREATE TABLE "Статус верификации"
 (
-  "ID статуса верификации" Integer NOT NULL,
+  "ID статуса верификации" Serial NOT NULL,
   "Статус верификации" Character varying(20) NOT NULL
 )
 WITH (
@@ -87,7 +111,7 @@ ALTER TABLE "Статус верификации" ADD CONSTRAINT "Unique_Identif
 
 CREATE TABLE "Персонал"
 (
-  "ID сотрудника" Integer NOT NULL,
+  "ID сотрудника" Serial NOT NULL,
   "Номер трудового договора" Character varying(40) NOT NULL,
   "Логин" Character varying(30) NOT NULL,
   "Пароль" Character varying(60) NOT NULL,
@@ -108,7 +132,7 @@ ALTER TABLE "Персонал" ADD CONSTRAINT "Unique_Identifier10" PRIMARY KEY 
 
 CREATE TABLE "Статус трудоустройства"
 (
-  "ID статуса трудоустройства" Integer NOT NULL,
+  "ID статуса трудоустройства" Serial NOT NULL,
   "Статус трудоустройства" Character varying(120) NOT NULL
 )
 WITH (
@@ -122,7 +146,7 @@ ALTER TABLE "Статус трудоустройства" ADD CONSTRAINT "Unique
 
 CREATE TABLE "Депозитарный счёт"
 (
-  "ID депозитарного счёта" Integer NOT NULL,
+  "ID депозитарного счёта" Serial NOT NULL,
   "Номер депозитарного договора" Character varying(120) NOT NULL,
   "Дата открытия" Date NOT NULL,
   "ID пользователя" Integer NOT NULL
@@ -138,7 +162,7 @@ ALTER TABLE "Депозитарный счёт" ADD CONSTRAINT "Unique_Identifie
 
 CREATE TABLE "Баланс депозитарного счёта"
 (
-  "ID баланса депозитарного счёта" Integer NOT NULL,
+  "ID баланса депозитарного счёта" Serial NOT NULL,
   "Сумма" Numeric(12,2) NOT NULL,
   "ID депозитарного счёта" Integer NOT NULL,
   "ID пользователя" Integer NOT NULL,
@@ -158,7 +182,7 @@ ALTER TABLE "Баланс депозитарного счёта" ADD CONSTRAINT 
 
 CREATE TABLE "Список ценных бумаг"
 (
-  "ID ценной бумаги" Integer NOT NULL,
+  "ID ценной бумаги" Serial NOT NULL,
   "Наименование" Character varying(120) NOT NULL,
   "Размер лота" Numeric(12,2) NOT NULL,
   "ISIN" Character varying(40) NOT NULL,
@@ -179,7 +203,7 @@ ALTER TABLE "Список ценных бумаг" ADD CONSTRAINT "Unique_Identi
 
 CREATE TABLE "История операций деп. счёта"
 (
-  "ID операции деп. счёта" Integer NOT NULL,
+  "ID операции деп. счёта" Serial NOT NULL,
   "Сумма операции" Numeric(12,2) NOT NULL,
   "Время" Timestamp(6) NOT NULL,
   "ID депозитарного счёта" Integer NOT NULL,
@@ -210,7 +234,7 @@ ALTER TABLE "История операций деп. счёта" ADD CONSTRAINT 
 
 CREATE TABLE "Тип операции депозитарного счёта"
 (
-  "ID типа операции деп. счёта" Integer NOT NULL,
+  "ID типа операции деп. счёта" Serial NOT NULL,
   "Тип" Character varying(15) NOT NULL
 )
 WITH (
@@ -224,7 +248,7 @@ ALTER TABLE "Тип операции депозитарного счёта" ADD 
 
 CREATE TABLE "Брокерский счёт"
 (
-  "ID брокерского счёта" Integer NOT NULL,
+  "ID брокерского счёта" Serial NOT NULL,
   "Баланс" Numeric(12,2) NOT NULL,
   "ИНН" Character varying(30) NOT NULL,
   "БИК" Character varying(30) NOT NULL,
@@ -248,7 +272,7 @@ ALTER TABLE "Брокерский счёт" ADD CONSTRAINT "Unique_Identifier12"
 
 CREATE TABLE "История операций бр. счёта"
 (
-  "ID операции бр. счёта" Integer NOT NULL,
+  "ID операции бр. счёта" Serial NOT NULL,
   "Сумма операции" Numeric(12,2) NOT NULL,
   "Время" Timestamp(6) NOT NULL,
   "ID брокерского счёта" Integer NOT NULL,
@@ -272,7 +296,7 @@ ALTER TABLE "История операций бр. счёта" ADD CONSTRAINT "U
 
 CREATE TABLE "Тип операции брокерского счёта"
 (
-  "ID типа операции бр. счёта" Integer NOT NULL,
+  "ID типа операции бр. счёта" Serial NOT NULL,
   "Тип" Character varying(15) NOT NULL
 )
 WITH (
@@ -286,7 +310,7 @@ ALTER TABLE "Тип операции брокерского счёта" ADD CONS
 
 CREATE TABLE "Дивиденды"
 (
-  "ID дивидинда" Integer NOT NULL,
+  "ID дивиденда" Serial NOT NULL,
   "Дата" Date NOT NULL,
   "Сумма" Numeric(12,2) NOT NULL,
   "ID ценной бумаги" Integer NOT NULL
@@ -295,14 +319,14 @@ WITH (
   autovacuum_enabled=true)
 ;
 
-ALTER TABLE "Дивиденды" ADD CONSTRAINT "Unique_Identifier14" PRIMARY KEY ("ID дивидинда","ID ценной бумаги")
+ALTER TABLE "Дивиденды" ADD CONSTRAINT "Unique_Identifier14" PRIMARY KEY ("ID дивиденда","ID ценной бумаги")
 ;
 
 -- Table Список валют
 
 CREATE TABLE "Список валют"
 (
-  "ID валюты" Integer NOT NULL,
+  "ID валюты" Serial NOT NULL,
   "Наименование валюты" Character varying(30) NOT NULL
 )
 WITH (
@@ -316,7 +340,7 @@ ALTER TABLE "Список валют" ADD CONSTRAINT "Unique_Identifier6" PRIMAR
 
 CREATE TABLE "Тип предложения"
 (
-  "ID типа предложения" Integer NOT NULL,
+  "ID типа предложения" Serial NOT NULL,
   "Тип" Character varying(15) NOT NULL
 )
 WITH (
@@ -330,7 +354,7 @@ ALTER TABLE "Тип предложения" ADD CONSTRAINT "Unique_Identifier3" 
 
 CREATE TABLE "Предложение"
 (
-  "ID предложения" Integer NOT NULL,
+  "ID предложения" Serial NOT NULL,
   "Сумма" Numeric(12,2) NOT NULL,
   "ID ценной бумаги" Integer NOT NULL,
   "ID пользователя" Integer NOT NULL,
@@ -353,7 +377,7 @@ ALTER TABLE "Предложение" ADD CONSTRAINT "Unique_Identifier11" PRIMAR
 
 CREATE TABLE "Банк"
 (
-  "ID банка" Integer NOT NULL,
+  "ID банка" Serial NOT NULL,
   "Наименование" Character varying(120) NOT NULL,
   "ИНН" Character varying(40) NOT NULL,
   "ОГРН" Character varying(40) NOT NULL,
@@ -371,7 +395,7 @@ ALTER TABLE "Банк" ADD CONSTRAINT "Unique_Identifier8" PRIMARY KEY ("ID ба
 
 CREATE TABLE "История цены"
 (
-  "ID зап. ист. цены" Integer NOT NULL,
+  "ID зап. ист. цены" Serial NOT NULL,
   "Время" Timestamp(6) NOT NULL,
   "Цена открытия" Numeric(12,2) NOT NULL,
   "Цена закрытия" Numeric(12,2) NOT NULL,
@@ -393,7 +417,7 @@ CREATE TABLE currency_rates (
     id SERIAL PRIMARY KEY,
     "Код валюты" Character varying(30) NOT NULL,
     "Курс" NUMERIC(12,4) NOT NULL,
-    "Время" TIMESTAMP(6) NOT NULL DEFAULT NOW()
+    "Время" Timestamp(6) NOT NULL DEFAULT NOW()
 );
 
 -- Create foreign keys (relationships) section -------------------------------------------------
@@ -575,250 +599,6 @@ ALTER TABLE "Список ценных бумаг"
 ;
 
 
-
-CREATE OR REPLACE FUNCTION calc_total_account_value(
-    p_user_id INT,
-    p_currency_id INT      -- Валюта результата (1 = RUB, 2 = USD)
-) RETURNS NUMERIC AS $$
-DECLARE
-    total NUMERIC := 0;
-    depo RECORD;
-    cur_rate NUMERIC := get_currency_rate(p_currency_id);  
-BEGIN
-    ----------------------------------------------------------------
-    -- 1. Суммарная стоимость ВСЕХ депозитарных счетов пользователя
-    ----------------------------------------------------------------
-    FOR depo IN 
-        SELECT "ID депозитарного счёта"
-        FROM "Депозитарный счёт"
-        WHERE "ID пользователя" = p_user_id
-    LOOP
-        total := total + calc_depo_value(depo."ID депозитарного счёта", p_user_id, p_currency_id);
-    END LOOP;
-
-
-    ----------------------------------------------------------------
-    -- 2. Добавляем брокерские счета пользователя
-    --    (учитываем валюту каждого счёта)
-    ----------------------------------------------------------------
-    total := total +
-        COALESCE((
-            SELECT SUM(
-                       bs."Баланс" /
-                       CASE 
-                           WHEN bs."ID валюты" = p_currency_id THEN 1
-                           ELSE get_currency_rate(bs."ID валюты")
-                       END
-                   )
-            FROM "Брокерский счёт" bs
-            WHERE bs."ID пользователя" = p_user_id
-        ), 0);
-
-    RETURN total;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION get_currency_rate(p_currency_id INT)
-RETURNS NUMERIC AS $$
-DECLARE
-    rate NUMERIC := 1;
-BEGIN
-    -- 1 = RUB, 2 = USD (как в вашей таблице)
-    IF p_currency_id = 1 THEN
-        RETURN 1;
-    END IF;
-
-    SELECT cr.rate INTO rate
-    FROM currency_rates cr
-    WHERE cr.currency_code = 'USD'
-    ORDER BY updated DESC
-    LIMIT 1;
-
-    RETURN COALESCE(rate, 1);
-END;
-$$ LANGUAGE plpgsql;
-
-
-CREATE OR REPLACE FUNCTION calc_offer_value(
-    p_offer_id INT,
-    p_user_id INT
-) RETURNS NUMERIC AS $$
-DECLARE
-    paper_id INT;
-    qty NUMERIC;
-    price NUMERIC;
-BEGIN
-    SELECT "ID ценной бумаги", "Сумма"
-    INTO paper_id, qty
-    FROM "Предложение"
-    WHERE "ID предложения" = p_offer_id
-      AND "ID пользователя" = p_user_id;
-
-    SELECT "Цена закрытия"
-    INTO price
-    FROM "История цены"
-    WHERE "ID ценной бумаги" = paper_id
-    ORDER BY "Время" DESC
-    LIMIT 1;
-
-    RETURN qty * price;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION calc_depo_value(
-    p_depo_id INT,
-    p_user_id INT,
-    p_currency_id INT
-) RETURNS NUMERIC AS $$
-DECLARE
-    result NUMERIC := 0;
-    currency_rate NUMERIC := 1;
-BEGIN
-    currency_rate := get_currency_rate(p_currency_id);
-
-    SELECT 
-        SUM(b."Сумма" * c."Цена закрытия" / 
-               CASE WHEN sb."ID валюты" = p_currency_id 
-                    THEN 1 
-                    ELSE get_currency_rate(sb."ID валюты") END 
-        )
-    INTO result
-    FROM "Баланс депозитарного счёта" b
-    JOIN "Список ценных бумаг" sb ON sb."ID ценной бумаги" = b."ID ценной бумаги"
-    JOIN LATERAL (
-         SELECT "Цена закрытия"
-         FROM "История цены"
-         WHERE "ID ценной бумаги" = b."ID ценной бумаги"
-         ORDER BY "Время" DESC LIMIT 1
-    ) c ON TRUE
-    WHERE b."ID депозитарного счёта" = p_depo_id
-      AND b."ID пользователя" = p_user_id;
-
-    RETURN COALESCE(result, 0);
-END;
-$$ LANGUAGE plpgsql;
-
-
-
-CREATE OR REPLACE FUNCTION calc_depo_growth(
-    p_depo_id INT,
-    p_user_id INT,
-    p_interval TEXT
-) RETURNS NUMERIC AS $$
-DECLARE
-    current_value NUMERIC;
-    past_value NUMERIC := 0;
-BEGIN
-    -- Текущая стоимость
-    SELECT calc_depo_value(p_depo_id, p_user_id, 1)
-    INTO current_value;
-
-    -- Стоимость N времени назад
-    SELECT 
-        SUM(b."Сумма" * c."Цена закрытия")
-    INTO past_value
-    FROM "Баланс депозитарного счёта" b
-    JOIN LATERAL (
-        SELECT "Цена закрытия"
-        FROM "История цены"
-        WHERE "ID ценной бумаги" = b."ID ценной бумаги"
-          AND "Время" <= NOW() - p_interval::interval
-        ORDER BY "Время" DESC
-        LIMIT 1
-    ) c ON TRUE
-    WHERE b."ID депозитарного счёта" = p_depo_id
-      AND b."ID пользователя" = p_user_id;
-
-    RETURN current_value - COALESCE(past_value, 0);
-END;
-$$ LANGUAGE plpgsql;
-
-
-
-
-CREATE OR REPLACE FUNCTION calc_stock_growth(
-    p_paper_id INT
-) RETURNS NUMERIC AS $$
-DECLARE
-    today_price NUMERIC;
-    yesterday_price NUMERIC;
-BEGIN
-    SELECT "Цена закрытия"
-    INTO today_price
-    FROM "История цены"
-    WHERE "ID ценной бумаги" = p_paper_id
-    ORDER BY "Время" DESC
-    LIMIT 1;
-
-    SELECT "Цена закрытия"
-    INTO yesterday_price
-    FROM "История цены"
-    WHERE "ID ценной бумаги" = p_paper_id
-      AND "Время" < NOW() - INTERVAL '1 day'
-    ORDER BY "Время" DESC LIMIT 1;
-
-    RETURN today_price - COALESCE(yesterday_price, today_price);
-END;
-$$ LANGUAGE plpgsql;
-
-
-CREATE OR REPLACE FUNCTION distribute_dividends(
-    p_dividend_id INT
-) RETURNS VOID AS $$
-DECLARE
-    dividend RECORD;
-    owner RECORD;
-    new_op_id INT;
-BEGIN
-    SELECT * INTO dividend
-    FROM "Дивиденды"
-    WHERE "ID дивидинда" = p_dividend_id;
-
-    FOR owner IN
-        SELECT b.*
-        FROM "Баланс депозитарного счёта" b
-        WHERE b."ID ценной бумаги" = dividend."ID ценной бумаги"
-    LOOP
-        -- Начислить дивиденды
-        UPDATE "Баланс депозитарного счёта"
-        SET "Сумма" = "Сумма" + dividend."Сумма"
-        WHERE "ID баланса депозитарного счёта" = owner."ID баланса депозитарного счёта";
-
-        -- ID операции деп. счёта
-        SELECT COALESCE(MAX("ID операции деп. счёта"), 0) + 1
-        INTO new_op_id
-        FROM "История операций деп. счёта";
-
-        -- Записать в историю
-        INSERT INTO "История операций деп. счёта"(
-            "ID операции деп. счёта",
-            "Сумма операции",
-            "Время",
-            "ID депозитарного счёта",
-            "ID пользователя",
-            "ID ценной бумаги",
-            "ID сотрудника",
-            "ID операции бр. счёта",
-            "ID брокерского счёта",
-            "ID типа операции деп. счёта"
-        )
-        VALUES(
-            new_op_id,
-            dividend."Сумма",
-            NOW(),
-            owner."ID депозитарного счёта",
-            owner."ID пользователя",
-            owner."ID ценной бумаги",
-            1,   -- сотрудник (можете заменить)
-            0,
-            0,
-            1    -- тип: покупка (или "начисление" если добавите новый тип)
-        );
-    END LOOP;
-END;
-$$ LANGUAGE plpgsql;
-
-
 INSERT INTO "Статус верификации"("ID статуса верификации", "Статус верификации")
 VALUES
 (1, 'Не подтверждён'),
@@ -862,3 +642,427 @@ INSERT INTO "Тип предложения"("ID типа предложения"
 VALUES
 (1, 'Покупка'),
 (2, 'Продажа');
+
+ALTER TABLE "Брокерский счёт"
+    ADD COLUMN IF NOT EXISTS "ID пользователя" Integer;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class t ON c.conrelid = t.oid
+        WHERE c.conname = 'Relationship22_user' AND t.relname = 'Брокерский счёт'
+    ) THEN
+        IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'Пользователь') THEN
+            ALTER TABLE "Брокерский счёт"
+            ADD CONSTRAINT "Relationship22_user"
+            FOREIGN KEY ("ID пользователя")
+            REFERENCES "Пользователь"("ID пользователя")
+            ON DELETE CASCADE
+            ON UPDATE CASCADE;
+        END IF;
+    END IF;
+END$$;
+
+
+
+
+-- =========================
+-- 2) ФУНКЦИИ
+-- =========================
+
+-- 2.1 get_currency_rate: вернёт КУРС по ID валюты (курс в рублях за единицу валюты).
+CREATE OR REPLACE FUNCTION get_currency_rate(p_currency_id INT)
+RETURNS NUMERIC AS $$
+DECLARE
+    cur_name TEXT;
+    rate NUMERIC := 1;
+BEGIN
+    -- (RUB) id = 1 -> rate = 1
+    IF p_currency_id IS NULL THEN
+        RETURN 1;
+    END IF;
+    SELECT "Наименование валюты" INTO cur_name FROM "Список валют" WHERE "ID валюты" = p_currency_id;
+    IF cur_name IS NULL THEN
+        RETURN 1;
+    END IF;
+
+    SELECT cr."Курс" INTO rate
+    FROM currency_rates cr
+    WHERE cr."Код валюты" = cur_name
+    ORDER BY cr."Время" DESC
+    LIMIT 1;
+
+    RETURN COALESCE(rate, 1);
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- 2.2 convert_amount: конвертирует сумму из currency_from -> currency_to
+CREATE OR REPLACE FUNCTION convert_amount(p_amount NUMERIC, p_from_currency INT, p_to_currency INT)
+RETURNS NUMERIC AS $$
+DECLARE
+    rate_from NUMERIC;
+    rate_to NUMERIC;
+BEGIN
+    IF p_amount IS NULL THEN
+        RETURN 0;
+    END IF;
+
+    rate_from := get_currency_rate(p_from_currency);
+    rate_to   := get_currency_rate(p_to_currency);   
+
+    -- Если обе валюты имеют rate = 0 либо NULL:
+    IF COALESCE(rate_from,0) = 0 OR COALESCE(rate_to,0) = 0 THEN
+        RETURN 0;
+    END IF;
+
+    -- Сначала переводим сумму в RUB, затем в целевую валюту:
+    RETURN (p_amount * rate_from) / rate_to;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- 2.3 calc_depo_value: сумма по всем бумагам на депозитарном счёте, в валюте p_currency_id
+CREATE OR REPLACE FUNCTION calc_depo_value(
+    p_depo_id INT,
+    p_user_id INT,
+    p_currency_id INT
+) RETURNS NUMERIC AS $$
+DECLARE
+    result NUMERIC := 0;
+BEGIN
+    SELECT SUM(
+        b."Сумма" * 
+        ( -- берём последнюю цену в валюте бумаги
+            COALESCE(c."Цена закрытия",0)
+        )
+    ) INTO result
+    FROM "Баланс депозитарного счёта" b
+    JOIN "Список ценных бумаг" sb ON sb."ID ценной бумаги" = b."ID ценной бумаги"
+    JOIN LATERAL (
+         SELECT "Цена закрытия"
+         FROM "История цены"
+         WHERE "ID ценной бумаги" = b."ID ценной бумаги"
+         ORDER BY "Время" DESC LIMIT 1
+    ) c ON TRUE
+    WHERE b."ID депозитарного счёта" = p_depo_id
+      AND b."ID пользователя" = p_user_id;
+
+    -- Если result NULL -> 0
+    result := COALESCE(result,0);
+
+    -- Цена в единицах валюты бумаги * количество лотов/шт. Переведём в целевую валюту:
+    -- У валюты бумаги берем ID: sb."ID валюты"
+    SELECT SUM(
+        b."Сумма" * c."Цена закрытия" * get_currency_rate(sb."ID валюты") / get_currency_rate(p_currency_id)
+    ) INTO result
+    FROM "Баланс депозитарного счёта" b
+    JOIN "Список ценных бумаг" sb ON sb."ID ценной бумаги" = b."ID ценной бумаги"
+    JOIN LATERAL (
+         SELECT "Цена закрытия"
+         FROM "История цены"
+         WHERE "ID ценной бумаги" = b."ID ценной бумаги"
+         ORDER BY "Время" DESC LIMIT 1
+    ) c ON TRUE
+    WHERE b."ID депозитарного счёта" = p_depo_id
+      AND b."ID пользователя" = p_user_id;
+
+    RETURN COALESCE(result,0);
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- 2.4 calc_total_account_value: суммарное значение всех депозитарных + брокерских счетов в валюте p_currency_id
+CREATE OR REPLACE FUNCTION calc_total_account_value(
+    p_user_id INT,
+    p_currency_id INT      -- Валюта результата
+) RETURNS NUMERIC AS $$
+DECLARE
+    total NUMERIC := 0;
+    depo RECORD;
+    bs_sum NUMERIC := 0;
+BEGIN
+    -- Сумма по всем депозитарным счетам
+    FOR depo IN 
+        SELECT "ID депозитарного счёта" AS id
+        FROM "Депозитарный счёт"
+        WHERE "ID пользователя" = p_user_id
+    LOOP
+        total := total + calc_depo_value(depo.id, p_user_id, p_currency_id);
+    END LOOP;
+
+    -- Добавляем брокерские счета: суммируем балансы и конвертируем в p_currency_id
+    SELECT COALESCE(SUM(convert_amount(bs."Баланс", bs."ID валюты", p_currency_id)),0)
+    INTO bs_sum
+    FROM "Брокерский счёт" bs
+    WHERE bs."ID пользователя" = p_user_id;
+
+    total := total + COALESCE(bs_sum,0);
+
+    RETURN COALESCE(total,0);
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- 2.5 calc_offer_value: (если нет цены — 0)
+CREATE OR REPLACE FUNCTION calc_offer_value(
+    p_offer_id INT,
+    p_user_id INT
+) RETURNS NUMERIC AS $$
+DECLARE
+    paper_id INT;
+    qty NUMERIC := 0;
+    price NUMERIC := 0;
+BEGIN
+    SELECT "ID ценной бумаги", "Сумма"
+    INTO paper_id, qty
+    FROM "Предложение"
+    WHERE "ID предложения" = p_offer_id
+      AND "ID пользователя" = p_user_id;
+
+    IF paper_id IS NULL THEN
+        RETURN 0;
+    END IF;
+
+    SELECT "Цена закрытия"
+    INTO price
+    FROM "История цены"
+    WHERE "ID ценной бумаги" = paper_id
+    ORDER BY "Время" DESC
+    LIMIT 1;
+
+    RETURN COALESCE(qty,0) * COALESCE(price,0);
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- 2.6 calc_depo_growth: разница текущей стоимости и стоимости N времени назад (p_interval Postgre interval text '7 days')
+CREATE OR REPLACE FUNCTION calc_depo_growth(
+    p_depo_id INT,
+    p_user_id INT,
+    p_interval TEXT
+) RETURNS NUMERIC AS $$
+DECLARE
+    current_value NUMERIC := 0;
+    past_value NUMERIC := 0;
+BEGIN
+    current_value := calc_depo_value(p_depo_id, p_user_id, 1); -- результат в RUB (1 = RUB)
+    SELECT 
+        SUM(b."Сумма" * c."Цена закрытия")
+    INTO past_value
+    FROM "Баланс депозитарного счёта" b
+    JOIN LATERAL (
+        SELECT "Цена закрытия"
+        FROM "История цены"
+        WHERE "ID ценной бумаги" = b."ID ценной бумаги"
+          AND "Время" <= NOW() - p_interval::interval
+        ORDER BY "Время" DESC
+        LIMIT 1
+    ) c ON TRUE
+    WHERE b."ID депозитарного счёта" = p_depo_id
+      AND b."ID пользователя" = p_user_id;
+
+    RETURN COALESCE(current_value,0) - COALESCE(past_value,0);
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- 2.7 calc_stock_growth: рост цены акции за день
+CREATE OR REPLACE FUNCTION calc_stock_growth(
+    p_paper_id INT
+) RETURNS NUMERIC AS $$
+DECLARE
+    today_price NUMERIC := 0;
+    yesterday_price NUMERIC := 0;
+BEGIN
+    SELECT "Цена закрытия"
+    INTO today_price
+    FROM "История цены"
+    WHERE "ID ценной бумаги" = p_paper_id
+    ORDER BY "Время" DESC
+    LIMIT 1;
+
+    SELECT "Цена закрытия"
+    INTO yesterday_price
+    FROM "История цены"
+    WHERE "ID ценной бумаги" = p_paper_id
+      AND "Время" < NOW() - INTERVAL '1 day'
+    ORDER BY "Время" DESC LIMIT 1;
+
+    RETURN COALESCE(today_price,0) - COALESCE(yesterday_price,0);
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION distribute_dividends(div_id INT)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    dividend RECORD;
+    owner RECORD;
+    br_op_id INT;
+BEGIN
+    -- Получаем информацию о дивиденде
+    SELECT *
+    INTO dividend
+    FROM "Дивиденды"
+    WHERE "ID дивиденда" = div_id;
+
+    IF NOT FOUND THEN
+        RAISE NOTICE 'Дивиденд с ID % не найден', div_id;
+        RETURN;
+    END IF;
+
+    -- Для всех владельцев ценной бумаги начисляем дивиденды
+    FOR owner IN
+        SELECT 
+            bds."ID баланса депозитарного счёта",
+            bds."ID депозитарного счёта",
+            bds."ID пользователя",
+            bds."ID ценной бумаги",
+            bds."Сумма" AS amount,
+            dep."ID брокерского счёта"
+        FROM "Баланс депозитарного счёта" bds
+        JOIN "Депозитарный счёт" dep 
+             ON dep."ID депозитарного счёта" = bds."ID депозитарного счёта"
+        WHERE bds."ID ценной бумаги" = dividend."ID ценной бумаги"
+    LOOP
+        -- Создаём запись в История операций бр. счёта
+        INSERT INTO "История операций бр. счёта"(
+            "Сумма операции",
+            "Время",
+            "ID брокерского счёта",
+            "ID сотрудника",
+            "ID типа операции бр. счёта"
+        ) VALUES (
+            owner.amount * dividend."Сумма",  -- начисление дивиденда
+            NOW(),
+            owner."ID брокерского счёта",
+            1,  -- сотрудник (пример)
+            2   -- 2 = Пополнение
+        )
+        RETURNING "ID операции бр. счёта" INTO br_op_id;
+
+        -- Создаём запись в История операций деп. счёта
+        INSERT INTO "История операций деп. счёта"(
+            "Сумма операции",
+            "Время",
+            "ID депозитарного счёта",
+            "ID пользователя",
+            "ID ценной бумаги",
+            "ID сотрудника",
+            "ID операции бр. счёта",
+            "ID брокерского счёта",
+            "ID типа операции деп. счёта"
+        ) VALUES (
+            owner.amount * dividend."Сумма",
+            NOW(),
+            owner."ID депозитарного счёта",
+            owner."ID пользователя",
+            owner."ID ценной бумаги",
+            1,          -- сотрудник
+            br_op_id,   -- связь с брокерской операцией
+            owner."ID брокерского счёта",
+            1           -- 1 = Покупка/Начисление
+        );
+    END LOOP;
+END;
+$$;
+
+
+
+-- =========================
+-- 3) ТЕСТОВЫЕ ДАННЫЕ
+-- =========================
+
+DO $$
+DECLARE
+    uid INT;
+    depo_id INT;
+    broker_id INT;
+    bal_id INT;
+    offer_id INT;
+    div_id INT;
+    broker_op_id INT;
+BEGIN
+    --------------------------------------------------------
+    -- 1. СОЗДАЕМ ПОЛЬЗОВАТЕЛЯ
+    --------------------------------------------------------
+    INSERT INTO "Пользователь"
+    ("Электронная почта","Дата регистрации","Логин","Пароль","ID статуса верификации")
+    VALUES ('u1@test.com', NOW(), 'user1','pass', 1)
+    RETURNING "ID пользователя" INTO uid;
+
+    --------------------------------------------------------
+    -- 2. СОЗДАЕМ ДЕПОЗИТАРНЫЙ СЧЁТ
+    --------------------------------------------------------
+    INSERT INTO "Депозитарный счёт"
+    ("Номер депозитарного договора","Дата открытия","ID пользователя")
+    VALUES ('D100', NOW(), uid)
+    RETURNING "ID депозитарного счёта" INTO depo_id;
+
+    --------------------------------------------------------
+    -- 3. КУРСЫ ВАЛЮТ
+    --------------------------------------------------------
+    INSERT INTO currency_rates("Код валюты", "Курс") VALUES ('RUB', 1);
+    INSERT INTO currency_rates("Код валюты", "Курс") VALUES ('USD', 90.50);
+
+    --------------------------------------------------------
+    -- 4. ЦЕНЫ НА ЦЕННУЮ БУМАГУ
+    --------------------------------------------------------
+    INSERT INTO "История цены"
+    ("Время","Цена открытия","Цена закрытия","Цена минимальная","Цена максимальная","ID ценной бумаги")
+    VALUES
+    (NOW() - INTERVAL '1 day', 180, 185, 170, 190, 1),
+    (NOW(),                    200, 210, 195, 220, 1);
+
+
+INSERT INTO "История цены"
+    ("Время","Цена открытия","Цена закрытия","Цена минимальная","Цена максимальная","ID ценной бумаги")
+    VALUES
+    (NOW() - INTERVAL '1 day', 180, 185, 170, 190, 2),
+    (NOW(),                    200, 400, 195, 220, 2);
+    --------------------------------------------------------
+    -- 5. БАЛАНС ДЕПОЗИТАРНОГО СЧЁТА
+    --------------------------------------------------------
+    INSERT INTO "Баланс депозитарного счёта"
+    ("Сумма","ID депозитарного счёта","ID пользователя","ID ценной бумаги")
+    VALUES (10, depo_id, uid, 1)
+    RETURNING "ID баланса депозитарного счёта" INTO bal_id;
+INSERT INTO "Баланс депозитарного счёта"
+    ("Сумма","ID депозитарного счёта","ID пользователя","ID ценной бумаги")
+    VALUES (15, depo_id, uid, 2)
+    RETURNING "ID баланса депозитарного счёта" INTO bal_id;
+    --------------------------------------------------------
+    -- 6. СОЗДАЁМ БРОКЕРСКИЙ СЧЁТ
+    --------------------------------------------------------
+    INSERT INTO "Брокерский счёт"
+    ("Баланс","ИНН","БИК","ID банка","ID валюты")
+    VALUES (10000, '111','222', 1, 1)
+    RETURNING "ID брокерского счёта" INTO broker_id;
+
+    --------------------------------------------------------
+    -- 7. СОЗДАЕМ ПРЕДЛОЖЕНИЕ
+    --------------------------------------------------------
+    INSERT INTO "Предложение"
+    ("Сумма","ID ценной бумаги","ID пользователя","ID типа предложения")
+    VALUES (5, 1, uid, 1)
+    RETURNING "ID предложения" INTO offer_id;
+
+
+END $$;
+
+------------------------------------------------------------
+-- 4. ВЫВОД РЕЗУЛЬТАТОВ ТЕСТОВ
+------------------------------------------------------------
+
+SELECT 'get_currency_rate_RUB', get_currency_rate(1);
+SELECT 'get_currency_rate_USD', get_currency_rate(2);
+SELECT 'calc_depo_value',        calc_depo_value(1, 1, 2);
+select * from "Баланс депозитарного счёта";
+SELECT 'calc_total_account_value', calc_total_account_value(1, 1);
+--SELECT 'calc_offer_value',       calc_offer_value(1, 1);
+--SELECT 'calc_depo_growth',       calc_depo_growth(1, 1, '1 day');
+--SELECT 'calc_stock_growth',      calc_stock_growth(1);
