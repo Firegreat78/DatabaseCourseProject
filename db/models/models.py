@@ -185,7 +185,7 @@ class DepositoryAccount(Base):
 class Dividend(Base):
     __tablename__ = "Дивиденды"
 
-    id = Column("ID дивидинда", Integer, primary_key=True, nullable=False)
+    id = Column("ID дивиденда", Integer, primary_key=True, nullable=False)
     date = Column("Дата", Date, nullable=False)
     amount = Column("Сумма", Numeric(12,2), nullable=False)
     security_id = Column("ID ценной бумаги", Integer, ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
