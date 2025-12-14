@@ -6,11 +6,17 @@ from jose import jwt, JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.models.models import User, Staff
+from fastapi import HTTPException, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from .session import get_db
+
+bearer_scheme = HTTPBearer()
 
 # Настройки
 SECRET_KEY = "your-secret-key-change-in-production-12345"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 1000
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
@@ -34,8 +40,7 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: Dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    # ✅ Исправлено: timezone-aware now
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=15))
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -56,15 +61,38 @@ async def authenticate_staff(db: AsyncSession, login: str, password: str) -> Opt
     return staff
 
 
-def decode_access_token(token: str) -> Optional[Dict]:
+async def get_current_user(
+    token: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db)
+) -> Dict:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Не удалось проверить учетные данные",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
     try:
-        payload = jwt.decode(
-            token,
-            SECRET_KEY,
-            algorithms=[ALGORITHM]
-        )
-        # ✅ Также можно проверить, что exp — timezone-aware, но jwt.decode возвращает int/unixtime
-        # Поэтому дополнительной обработки не нужно
-        return payload
+        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: int = payload.get("user_id")
+        role: str = payload.get("role")
+        if user_id is None and role != "staff":
+            raise credentials_exception
     except JWTError:
-        return None
+        raise credentials_exception
+
+    # Опционально: проверяем, существует ли пользователь в БД (защита от поддельных токенов)
+    if role == "user" and user_id:
+        result = await db.execute(select(User.id).where(User.id == user_id))
+        if not result.scalar_one_or_none():
+            raise credentials_exception
+    elif role == "staff":
+        staff_id = payload.get("staff_id")
+        if not staff_id:
+            raise credentials_exception
+
+        # Проверяем существование сотрудника по ID
+        exists = await db.scalar(select(Staff.id).where(Staff.id == staff_id))  # type: ignore[arg-type]
+        if exists is None:
+            raise credentials_exception
+
+    return {"user_id": user_id, "role": role, "payload": payload}

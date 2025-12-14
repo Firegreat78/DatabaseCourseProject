@@ -1,17 +1,14 @@
 import uvicorn
-
 from datetime import timezone, datetime
-
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi import Security
+from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
+from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from db.session import get_db
-from db.auth import decode_access_token
-from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash
+from core.config import PORT, HOST
+from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, SECRET_KEY, ALGORITHM, get_current_user
 from pydantic import BaseModel, EmailStr, field_validator
 from db.models.models import (
     Bank,
@@ -37,7 +34,6 @@ from db.models.models import (
 )
 
 app = FastAPI()
-bearer_scheme = HTTPBearer()
 
 
 # Разрешаем React dev сервер
@@ -107,7 +103,8 @@ class LoginRequest(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
-
+    user_id: int
+    role: str = "user"
 
 class UserRegisterRequest(BaseModel):
     login: str
@@ -141,7 +138,12 @@ async def login_user(
     access_token = create_access_token(
         data={"sub": user.login, "role": "user", "user_id": user.id}
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "role": "user"
+    }
 
 
 @app.post("/api/login/staff", response_model=Token, summary="Вход сотрудника")
@@ -188,7 +190,7 @@ async def register_user(
         )
 
     # 3. Хэшируем пароль
-    hashed_password = get_password_hash(form_data.password)  # ✅ теперь импортирован
+    hashed_password = get_password_hash(form_data.password)
 
     # 4. Создаём пользователя
     new_user = User(
@@ -196,12 +198,12 @@ async def register_user(
         password=hashed_password,
         email=form_data.email,
         registration_date=datetime.now(timezone.utc).date(),
-        verification_status_id=1,  # проверьте ID в вашей БД!
+        verification_status_id=1,  #
     )
 
     db.add(new_user)
-    await db.commit()     # await — правильно для AsyncSession
-    await db.refresh(new_user)  # чтобы получить id после INSERT
+    await db.commit()
+    await db.refresh(new_user)
 
     return {
         "message": "Пользователь успешно зарегистрирован",
@@ -210,9 +212,65 @@ async def register_user(
         "email": new_user.email,
     }
 
+
+@app.get("/api/user/balance")
+async def get_user_balance(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user["role"] != "user":
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    user_id = current_user["user_id"]
+
+    try:
+        query = text("SELECT calc_total_account_value(:user_id, 1) AS total_rub")
+        result = await db.execute(query, {"user_id": user_id})
+        total_rub = result.scalar()
+
+        return {
+            "total_balance_rub": round(float(total_rub or 0), 2)
+        }
+    except Exception as e:
+        print(f"Ошибка расчёта баланса: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка сервера")
+
+
+@app.get("/api/currency/usd-rate")
+async def get_usd_rate(
+    current_user: dict = Depends(get_current_user),  # защита авторизацией
+    db: AsyncSession = Depends(get_db)
+):
+    # Опционально: можно разрешить только пользователям (не сотрудникам)
+    if current_user["role"] != "user":
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    try:
+        query = text("SELECT get_currency_rate(2) AS usd_rate")
+        result = await db.execute(query)
+        usd_rate = result.scalar()
+
+        if usd_rate is None:
+            raise HTTPException(status_code=404, detail="Курс USD не найден")
+
+        usd_rate_rounded = round(float(usd_rate), 4)
+
+        return {
+            "currency": "USD",
+            "rate_to_rub": usd_rate_rounded,
+            "source": "get_currency_rate(2)"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Ошибка получения курса USD: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка сервера при получении курса")
+
+
 def run():
     # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
-    uvicorn.run("main:app", host="localhost", port=8000, reload=True)
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=True)
 
 
 if __name__ == "__main__":
