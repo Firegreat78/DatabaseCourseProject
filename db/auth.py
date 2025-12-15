@@ -95,4 +95,4 @@ async def get_current_user(
         if exists is None:
             raise credentials_exception
 
-    return {"user_id": user_id, "role": role, "payload": payload}
+    return {"id": user_id, "role": role, "payload": payload}

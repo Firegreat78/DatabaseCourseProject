@@ -1,22 +1,24 @@
 import uvicorn
 from datetime import timezone, datetime
-from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
-from fastapi.security import HTTPBearer
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from db.session import get_db
 from core.config import PORT, HOST
-from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, SECRET_KEY, ALGORITHM, get_current_user
+from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, get_current_user
 from pydantic import BaseModel, EmailStr, field_validator
+
+from routers.routers import brokerage_accounts_router
+
 from db.models.models import (
     Bank,
     BrokerageAccount,
     BrokerageAccountHistory,
     BrokerageAccountOperationType,
     Currency,
-    CurrencyRates,
+    CurrencyRate,
     DepositoryAccount,
     DepositoryAccountBalance,
     DepositoryAccountHistory,
@@ -34,7 +36,7 @@ from db.models.models import (
 )
 
 app = FastAPI()
-
+app.include_router(brokerage_accounts_router)
 
 # Разрешаем React dev сервер
 app.add_middleware(
@@ -65,7 +67,7 @@ TABLES = {
     "depository_account_history": DepositoryAccountHistory,
     "depository_account_balance": DepositoryAccountBalance,
     "price_history": PriceHistory,
-    "currency_rates": CurrencyRates
+    "currency_rate": CurrencyRate
 }
 
 
@@ -228,7 +230,7 @@ async def get_user_balance(
     if current_user["role"] != "user":
         raise HTTPException(status_code=403, detail="Доступ запрещён")
 
-    user_id = current_user["user_id"]
+    user_id = current_user["id"]
 
     try:
         query = text("SELECT calc_total_account_value(:user_id, 1) AS total_rub")

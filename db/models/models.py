@@ -1,8 +1,11 @@
 # db/models/models.py
 from __future__ import annotations
 
-from sqlalchemy import String, Integer, Numeric, Boolean, Date, ForeignKey, Column, ForeignKeyConstraint, TIMESTAMP
-from sqlalchemy.orm import DeclarativeBase, registry, Mapped, relationship
+from sqlalchemy import String, Integer, Numeric, Boolean, Date, ForeignKey, Column, ForeignKeyConstraint, TIMESTAMP, UniqueConstraint, DateTime, func
+from sqlalchemy.orm import DeclarativeBase, registry, Mapped, relationship, mapped_column
+
+from decimal import Decimal
+from datetime import datetime, date, timezone
 
 # Создаём реестр (можно и без него, но с ним типы работают лучше)
 reg = registry()
@@ -72,10 +75,11 @@ class Currency(Base):
     __tablename__ = "Список валют"
 
     id = Column("ID валюты", Integer, primary_key=True, nullable=False)
-    name = Column("Наименование валюты", String(30), nullable=False)
+    code = Column("Код", String(3), nullable=False, unique=True)
+    symbol = Column("Символ", String(10), nullable=False)
 
     def __repr__(self):
-        return f"<Currency(id={self.id}, name='{self.name}')>"
+        return f"<Currency(id={self.id}, code='{self.code}', symbol='{self.symbol}')>"
 
 
 class EmploymentStatus(Base):
@@ -154,15 +158,37 @@ class Proposal(Base):
 class BrokerageAccount(Base):
     __tablename__ = "Брокерский счёт"
 
-    id = Column("ID брокерского счёта", Integer, primary_key=True, nullable=False)
-    balance = Column("Баланс", Numeric(12,2), nullable=False)
+    id = Column("ID брокерского счёта", Integer, primary_key=True)
+    balance = Column("Баланс", Numeric(12, 2), nullable=False)
     inn = Column("ИНН", String(30), nullable=False)
     bik = Column("БИК", String(30), nullable=False)
-    bank_id = Column("ID банка", Integer, ForeignKey("Банк.ID банка", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
-    currency_id = Column("ID валюты", Integer, ForeignKey("Список валют.ID валюты", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
 
-    bank = relationship("Bank", backref="brokerage_accounts")
-    currency = relationship("Currency", backref="brokerage_accounts")
+    bank_id = Column(
+        "ID банка",
+        Integer,
+        ForeignKey("Банк.ID банка", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=False
+    )
+
+    user_id = Column(
+        "ID пользователя",
+        Integer,
+        ForeignKey("Пользователь.ID пользователя", ondelete="CASCADE", onupdate="CASCADE"),
+        nullable=False
+    )
+
+    currency_id = Column(
+        "ID валюты",
+        Integer,
+        ForeignKey("Список валют.ID валюты", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=False
+    )
+
+    balance_change_requests = relationship(
+        "BrockerageBalanceChangeRequest",
+        back_populates="brokerage_account",
+        cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
         return f"<BrokerageAccount(id={self.id}, balance={self.balance}, inn='{self.inn}', bik='{self.bik}', bank_id={self.bank_id}, currency_id={self.currency_id})>"
@@ -383,13 +409,139 @@ class PriceHistory(Base):
         return f"<PriceHistory(id={self.id}, time={self.time}, open={self.open_price}, close={self.close_price}, security_id={self.security_id})>"
 
 
-class CurrencyRates(Base):
-    __tablename__ = "currency_rates"
+class CurrencyRate(Base):
+    __tablename__ = "currency_rate"
+    __table_args__ = (
+        UniqueConstraint(
+            "base_currency_id",
+            "target_currency_id",
+            "rate_date",
+            name="uq_currency_rate_pair_date",
+        ),
+    )
 
-    id = Column("id", Integer, primary_key=True, nullable=False, autoincrement=True)
-    currency_code = Column("Код валюты", String(30), nullable=False)
-    rate = Column("Курс", Numeric(12,4), nullable=False)
-    time = Column("Время", TIMESTAMP(6), nullable=False)
+    id: Mapped[int] = mapped_column(primary_key=True)
 
-    def __repr__(self):
-        return f"<CurrencyRates(id={self.id}, currency_code='{self.currency_code}', rate={self.rate}, time={self.time})>"
+    base_currency_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            'Список валют.ID валюты',
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+
+    target_currency_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            'Список валют.ID валюты',
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+
+    rate: Mapped[Decimal] = mapped_column(
+        Numeric(20, 8),
+        nullable=False,
+    )
+
+    rate_date: Mapped[date] = mapped_column(
+        Date,
+        nullable=False,
+        default=date.today,
+    )
+
+    rate_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+    # -------- relationships --------
+
+    base_currency: Mapped["Currency"] = relationship(
+        "Currency",
+        primaryjoin="foreign(CurrencyRate.base_currency_id) == remote(Currency.id)",
+        foreign_keys=[base_currency_id],
+        lazy="joined",
+    )
+
+    target_currency: Mapped["Currency"] = relationship(
+        "Currency",
+        primaryjoin="foreign(CurrencyRate.target_currency_id) == remote(Currency.id)",
+        foreign_keys=[target_currency_id],
+        lazy="joined",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CurrencyRate "
+            f"{self.base_currency_id}->{self.target_currency_id} "
+            f"{self.rate} ({self.rate_date})>"
+        )
+
+
+class BrockerageBalanceChangeRequestStatus(Base):
+    __tablename__ = "Статус запр. на изм. бал. бр. счёта"
+
+    id = Column("ID статуса запроса", Integer, primary_key=True, autoincrement=True)
+    description = Column("Описание", String(30), nullable=False)
+
+    # Обратная связь — исправлено имя класса
+    requests = relationship(
+        "BrockerageBalanceChangeRequest",  # правильное имя класса
+        back_populates="status"
+    )
+
+
+class BrockerageBalanceChangeRequest(Base):
+    __tablename__ = "Запрос на изм. баланса бр. счёта"
+    __table_args__ = {"schema": "public"}
+
+    id = Column(
+        "ID запроса на изм. баланса",
+        Integer,
+        primary_key=True,
+        autoincrement=True
+    )
+
+    brokerage_account_id = Column(
+        "ID брокерского счёта",
+        Integer,
+        ForeignKey(
+            "Брокерский счёт.ID брокерского счёта",
+            onupdate="CASCADE",
+            ondelete="CASCADE"
+        ),
+        nullable=False
+    )
+
+    status_id = Column(
+        "ID статуса запроса",
+        Integer,
+        ForeignKey(
+            "Статус запр. на изм. бал. бр. счёта.ID статуса запроса",
+            onupdate="RESTRICT",
+            ondelete="RESTRICT"
+        ),
+        nullable=False
+    )
+
+    amount = Column("Сумма", Numeric(12, 2), nullable=False)
+
+    created_at = Column(
+        "Время создания",
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+
+    brokerage_account = relationship(
+        "BrokerageAccount",
+        back_populates="balance_change_requests"
+    )
+
+    status = relationship(
+        "BrockerageBalanceChangeRequestStatus",
+        back_populates="requests"
+    )
