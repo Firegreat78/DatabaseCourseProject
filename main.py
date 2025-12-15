@@ -151,7 +151,7 @@ async def login_staff(
     form_data: LoginRequest,  # Исправлено: form_data: LoginRequest
     db: AsyncSession = Depends(get_db)
 ):
-    staff = await authenticate_staff(db, form_data.login, form_data.password)  # form_data
+    staff = await authenticate_staff(db, form_data.login, form_data.password)
     if not staff:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -159,9 +159,16 @@ async def login_staff(
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token = create_access_token(
-        data={"sub": staff.login, "role": "staff", "staff_id": staff.id}
+        data={"sub": staff.login, "role": staff.rights_level, "staff_id": staff.id}
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    
+    # Возвращаем ВСЕ обязательные поля из модели Token
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": staff.id,  # Добавляем user_id (используем staff.id)
+        "role": staff.rights_level       # Добавляем role
+    }
 
 
 @app.post("/api/register/user", status_code=status.HTTP_201_CREATED, summary="Регистрация пользователя")

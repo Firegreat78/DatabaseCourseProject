@@ -9,7 +9,7 @@ async def login_staff(db: AsyncSession, login: str, password: str):
 
     token = create_access_token({
         "sub": staff.login,
-        "role": "staff",
+        "role": staff.rights_level,
         "staff_id": staff.id,
     })
 
