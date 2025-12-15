@@ -151,12 +151,9 @@ CREATE TABLE "Депозитарный счёт"
   "Дата открытия" Date NOT NULL,
   "ID пользователя" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-ALTER TABLE "Депозитарный счёт" ADD CONSTRAINT "Unique_Identifier13" PRIMARY KEY ("ID депозитарного счёта","ID пользователя")
-;
+WITH (autovacuum_enabled=true);
+ALTER TABLE "Депозитарный счёт" ADD CONSTRAINT "Unique_Identifier13" PRIMARY KEY ("ID депозитарного счёта","ID пользователя");
+ALTER TABLE "Депозитарный счёт" ADD CONSTRAINT unique_user_deposit_account UNIQUE ("ID пользователя");
 
 -- Table Баланс депозитарного счёта
 
@@ -283,18 +280,10 @@ CREATE TABLE "История операций бр. счёта"
   "ID сотрудника" Integer NOT NULL,
   "ID типа операции бр. счёта" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-CREATE INDEX "IX_Relationship29" ON "История операций бр. счёта" ("ID сотрудника")
-;
-
-CREATE INDEX "IX_Relationship33" ON "История операций бр. счёта" ("ID типа операции бр. счёта")
-;
-
-ALTER TABLE "История операций бр. счёта" ADD CONSTRAINT "Unique_Identifier17" PRIMARY KEY ("ID операции бр. счёта","ID брокерского счёта")
-;
+WITH (autovacuum_enabled=true);
+CREATE INDEX "IX_Relationship29" ON "История операций бр. счёта" ("ID сотрудника");
+CREATE INDEX "IX_Relationship33" ON "История операций бр. счёта" ("ID типа операции бр. счёта");
+ALTER TABLE "История операций бр. счёта" ADD CONSTRAINT "Unique_Identifier17" PRIMARY KEY ("ID операции бр. счёта","ID брокерского счёта");
 
 -- Table Тип операции брокерского счёта
 
@@ -303,12 +292,9 @@ CREATE TABLE "Тип операции брокерского счёта"
   "ID типа операции бр. счёта" Serial NOT NULL,
   "Тип" Character varying(15) NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
+WITH (autovacuum_enabled=true);
 
-ALTER TABLE "Тип операции брокерского счёта" ADD CONSTRAINT "Unique_Identifier2" PRIMARY KEY ("ID типа операции бр. счёта")
-;
+ALTER TABLE "Тип операции брокерского счёта" ADD CONSTRAINT "Unique_Identifier2" PRIMARY KEY ("ID типа операции бр. счёта");
 
 -- Table Дивиденды
 
@@ -319,12 +305,8 @@ CREATE TABLE "Дивиденды"
   "Сумма" Numeric(12,2) NOT NULL,
   "ID ценной бумаги" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-ALTER TABLE "Дивиденды" ADD CONSTRAINT "Unique_Identifier14" PRIMARY KEY ("ID дивиденда","ID ценной бумаги")
-;
+WITH (autovacuum_enabled=true);
+ALTER TABLE "Дивиденды" ADD CONSTRAINT "Unique_Identifier14" PRIMARY KEY ("ID дивиденда","ID ценной бумаги");
 
 -- Table Список валют
 
@@ -334,12 +316,8 @@ CREATE TABLE "Список валют"
   "Код" Char(3) NOT NULL UNIQUE,
   "Символ" Character varying(10) NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-ALTER TABLE "Список валют" ADD CONSTRAINT "Unique_Identifier6" PRIMARY KEY ("ID валюты")
-;
+WITH (autovacuum_enabled=true);
+ALTER TABLE "Список валют" ADD CONSTRAINT "Unique_Identifier6" PRIMARY KEY ("ID валюты");
 
 -- Table Тип предложения
 
@@ -348,12 +326,8 @@ CREATE TABLE "Тип предложения"
   "ID типа предложения" Serial NOT NULL,
   "Тип" Character varying(15) NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-ALTER TABLE "Тип предложения" ADD CONSTRAINT "Unique_Identifier3" PRIMARY KEY ("ID типа предложения")
-;
+WITH (autovacuum_enabled=true);
+ALTER TABLE "Тип предложения" ADD CONSTRAINT "Unique_Identifier3" PRIMARY KEY ("ID типа предложения");
 
 -- Table Предложение
 
@@ -365,18 +339,10 @@ CREATE TABLE "Предложение"
   "ID пользователя" Integer NOT NULL,
   "ID типа предложения" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-CREATE INDEX "IX_Relationship20" ON "Предложение" ("ID ценной бумаги")
-;
-
-CREATE INDEX "IX_Relationship36" ON "Предложение" ("ID типа предложения")
-;
-
-ALTER TABLE "Предложение" ADD CONSTRAINT "Unique_Identifier11" PRIMARY KEY ("ID предложения","ID пользователя")
-;
+WITH (autovacuum_enabled=true);
+CREATE INDEX "IX_Relationship20" ON "Предложение" ("ID ценной бумаги");
+CREATE INDEX "IX_Relationship36" ON "Предложение" ("ID типа предложения");
+ALTER TABLE "Предложение" ADD CONSTRAINT "Unique_Identifier11" PRIMARY KEY ("ID предложения","ID пользователя");
 
 -- Table Банк
 
@@ -389,19 +355,15 @@ CREATE TABLE "Банк"
   "БИК" Character varying(40) NOT NULL,
   "Срок действия лицензии" Date NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-ALTER TABLE "Банк" ADD CONSTRAINT "Unique_Identifier8" PRIMARY KEY ("ID банка")
-;
+WITH (autovacuum_enabled=true);
+ALTER TABLE "Банк" ADD CONSTRAINT "Unique_Identifier8" PRIMARY KEY ("ID банка");
 
 -- Table История цены
 
 CREATE TABLE "История цены"
 (
   "ID зап. ист. цены" Serial NOT NULL,
-  "Время" Timestamp(6) NOT NULL,
+  "Время" Date NOT NULL,
   "Цена открытия" Numeric(12,2) NOT NULL,
   "Цена закрытия" Numeric(12,2) NOT NULL,
   "Цена минимальная" Numeric(12,2) NOT NULL,
@@ -418,10 +380,51 @@ CREATE TABLE currency_rate (
     target_currency_id INT NOT NULL, -- Целевая валюта (например, USD = 2)
     rate NUMERIC(20, 8) NOT NULL,                            -- Курс с высокой точностью (8 знаков после запятой хватит для любых валют)
     rate_date DATE NOT NULL DEFAULT CURRENT_DATE,            -- Дата курса
-    rate_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,         -- Опционально: точное время (если курсы обновляются чаще раза в день)
+    rate_time TIMESTAMPTZ(6) DEFAULT CURRENT_TIMESTAMP,         -- Опционально: точное время (если курсы обновляются чаще раза в день)
 
     UNIQUE (base_currency_id, target_currency_id, rate_date) -- Один курс на пару в день
 );
+
+
+CREATE TABLE IF NOT EXISTS public."Статус запр. на изм. бал. бр. счёта"
+(
+    "ID статуса запроса" serial PRIMARY KEY,
+    "Описание" varchar(30) NOT NULL
+)
+WITH (autovacuum_enabled = TRUE)
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public."Статус запр. на изм. бал. бр. счёта" OWNER to postgres;
+
+CREATE TABLE IF NOT EXISTS public."Запрос на изм. баланса бр. счёта"
+(
+    "ID запроса на изм. баланса" serial PRIMARY KEY,
+    "ID статуса запроса" integer NOT NULL,
+    "ID брокерского счёта" integer NOT NULL,
+    "Сумма" numeric(12,2) NOT NULL,
+    "Время создания" timestamp NOT NULL DEFAULT now(),
+    CONSTRAINT "FK_ЗапросБрСчет"
+        FOREIGN KEY ("ID брокерского счёта")
+        REFERENCES public."Брокерский счёт" ("ID брокерского счёта")
+        ON UPDATE CASCADE
+        ON DELETE CASCADE,
+	CONSTRAINT "FK_СтЗапросБрСчет"
+        FOREIGN KEY ("ID статуса запроса")
+        REFERENCES public."Статус запр. на изм. бал. бр. счёта" ("ID статуса запроса")
+        ON UPDATE RESTRICT
+        ON DELETE RESTRICT
+)
+WITH (autovacuum_enabled = TRUE)
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public."Запрос на изм. баланса бр. счёта" OWNER to postgres;
+
+-- Index для быстрого поиска по брокерскому счёту
+CREATE INDEX IF NOT EXISTS "IX_ЗапросБрСчет"
+    ON public."Запрос на изм. баланса бр. счёта" USING btree
+    ("ID брокерского счёта" ASC NULLS LAST)
+    TABLESPACE pg_default;
+
 
 -- Create foreign keys (relationships) section -------------------------------------------------
 
@@ -634,6 +637,27 @@ VALUES
 (1, 'Активен'),
 (2, 'Уволен');
 
+INSERT INTO "Статус запр. на изм. бал. бр. счёта"("Описание")
+VALUES
+('На рассмотрении'),
+('Отозвано'),
+('Отказано'),
+('Одобрено');
+
+INSERT INTO public."Персонал" (
+    "Номер трудового договора",
+    "Логин",
+    "Пароль",
+    "Уровень прав",
+    "ID статуса трудоустройства"
+) VALUES
+    ('TD-1001', 'ivanov', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'admin', 1),
+    ('TD-1002', 'petrov', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'staff', 1),
+    ('TD-1003', 'sidorov', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'staff', 2),
+    ('TD-1004', 'smirnova', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'admin', 1),
+    ('TD-1005', 'volkov', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'staff', 2);
+
+
 INSERT INTO "Список валют"("ID валюты", "Код", "Символ")
 VALUES
 (1, 'RUB', '₽'),
@@ -648,7 +672,8 @@ VALUES
 INSERT INTO "Список ценных бумаг"("ID ценной бумаги", "Наименование", "Размер лота", "ISIN", "Выплата дивидендов", "ID валюты")
 VALUES
 (1, 'Газпром', 10, 'RU0007661625', TRUE, 1),
-(2, 'Сбербанк', 5, 'RU0009029540', TRUE, 1);
+(2, 'Сбербанк', 5, 'RU0009029540', TRUE, 1),
+(3, 'Биткоин', 4, 'BTC', FALSE, 2);
 
 INSERT INTO "История цены"
 ("Время", "Цена открытия", "Цена закрытия", "Цена минимальная", "Цена максимальная", "ID ценной бумаги")
@@ -699,6 +724,145 @@ VALUES
 -- =========================
 -- 2) ФУНКЦИИ
 -- =========================
+
+CREATE OR REPLACE FUNCTION get_user_securities(user_id INT)
+RETURNS TABLE (
+    security_name TEXT,
+    lot_size NUMERIC(12,2),
+    isin TEXT,
+    has_dividends BOOLEAN,
+    amount DECIMAL,
+    currency_code CHAR(3),
+    currency_symbol VARCHAR(10)
+) AS $$
+    SELECT
+        s."Наименование" AS security_name,
+        s."Размер лота" AS lot_size,
+        s."ISIN" AS isin,
+        s."Выплата дивидендов" AS has_dividends,
+        bds."Сумма" AS amount,
+        c."Код" AS currency_code,
+        c."Символ" AS currency_symbol
+    FROM "Депозитарный счёт" ds
+    JOIN "Баланс депозитарного счёта" bds
+        ON bds."ID депозитарного счёта" = ds."ID депозитарного счёта"
+    JOIN "Список ценных бумаг" s
+        ON s."ID ценной бумаги" = bds."ID ценной бумаги"
+    JOIN "Список валют" c
+        ON c."ID валюты" = s."ID валюты"
+    WHERE ds."ID пользователя" = user_id;
+$$ LANGUAGE sql;
+
+
+CREATE OR REPLACE FUNCTION public.get_user_offers(user_id integer)
+    RETURNS TABLE(
+        "Тип предложения" text,
+        "Название бумаги" text,
+        "Количество" numeric
+    )
+    LANGUAGE 'sql'
+    VOLATILE PARALLEL UNSAFE
+    COST 100
+    ROWS 1000
+AS $BODY$
+    SELECT
+        t."Тип" AS "Тип предложения",
+        b."Наименование" AS "Название бумаги",
+        p."Сумма" AS "Количество"
+    FROM "Предложение" p
+    LEFT JOIN "Список ценных бумаг" b
+        ON p."ID ценной бумаги" = b."ID ценной бумаги"
+    LEFT JOIN "Тип предложения" t
+        ON p."ID типа предложения" = t."ID типа предложения"
+    WHERE p."ID пользователя" = user_id;
+$BODY$;
+
+
+CREATE OR REPLACE FUNCTION public.get_exchange_stocks() -- список всех ценных бумаг с доп. информацией (вкладка "биржа")
+RETURNS TABLE (
+    id              INTEGER,
+    ticker          VARCHAR,
+    price           NUMERIC(12,2),
+    currency        VARCHAR(10),
+    change          NUMERIC(6,2)
+)
+LANGUAGE sql
+STABLE
+AS $$
+WITH last_prices AS (
+    SELECT
+        ph."ID ценной бумаги",
+        ph."Цена закрытия",
+        ph."Время",
+        ROW_NUMBER() OVER (
+            PARTITION BY ph."ID ценной бумаги"
+            ORDER BY ph."Время" DESC
+        ) AS rn
+    FROM "История цены" ph
+),
+prices AS (
+    SELECT
+        s."ID ценной бумаги" AS id,
+        s."Наименование" AS ticker,
+        lp."Цена закрытия" AS last_price,
+        prev."Цена закрытия" AS prev_price,
+        c."Символ" AS currency
+    FROM "Список ценных бумаг" s
+    JOIN last_prices lp
+        ON lp."ID ценной бумаги" = s."ID ценной бумаги"
+       AND lp.rn = 1
+    LEFT JOIN last_prices prev
+        ON prev."ID ценной бумаги" = s."ID ценной бумаги"
+       AND prev.rn = 2
+    JOIN "Список валют" c
+        ON c."ID валюты" = s."ID валюты"
+)
+SELECT
+    id,
+    ticker,
+    last_price AS price,
+    currency,
+    CASE
+        WHEN prev_price IS NULL OR prev_price = 0 THEN 0
+        ELSE ROUND(
+            ((last_price - prev_price) / prev_price) * 100,
+            2
+        )
+    END AS change
+FROM prices
+ORDER BY ticker;
+$$;
+
+ALTER FUNCTION public.get_exchange_stocks()
+    OWNER TO postgres;
+
+
+CREATE OR REPLACE FUNCTION get_brockerage_account_operations(p_account_id integer)
+RETURNS TABLE (
+    "Время" timestamp,
+    "Тип операции" varchar,
+    "Сумма операции" numeric,
+    "Символ валюты" varchar
+)
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT
+        h."Время",
+        t."Тип",
+        h."Сумма операции",
+        c."Символ"
+    FROM "История операций бр. счёта" h
+    JOIN "Тип операции брокерского счёта" t
+        ON h."ID типа операции бр. счёта" = t."ID типа операции бр. счёта"
+    JOIN "Брокерский счёт" b
+        ON h."ID брокерского счёта" = b."ID брокерского счёта"
+    JOIN "Список валют" c
+        ON b."ID валюты" = c."ID валюты"
+    WHERE h."ID брокерского счёта" = p_account_id
+    ORDER BY h."Время" DESC;
+$$;
+
 
 -- 2.1 get_currency_rate: вернёт КУРС по ID валюты (курс в рублях за единицу валюты).
 CREATE OR REPLACE FUNCTION get_currency_rate(
@@ -865,7 +1029,7 @@ BEGIN
     END LOOP;
 
     -- Добавляем брокерские счета: суммируем балансы и конвертируем в p_currency_id
-    SELECT COALESCE(SUM(convert_amount(bs."Баланс", bs."ID валюты", p_currency_id)),0)
+    SELECT COALESCE(SUM(convert_amount(bs."Баланс", p_currency_id, bs."ID валюты")),0)
     INTO bs_sum
     FROM "Брокерский счёт" bs
     WHERE bs."ID пользователя" = p_user_id;
@@ -1044,6 +1208,88 @@ END;
 $$;
 
 
+CREATE OR REPLACE FUNCTION public.get_security_value( -- цена 1 ед. ценной бумаги в заданной валюте
+    p_security_id  integer,
+    p_currency_id  integer
+)
+RETURNS numeric
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_price_close    numeric;
+    v_security_cur   integer;
+    v_rate           numeric;
+BEGIN
+    -- 1. Берём последнюю цену закрытия и валюту бумаги
+    SELECT
+        ip."Цена закрытия",
+        s."ID валюты"
+    INTO
+        v_price_close,
+        v_security_cur
+    FROM "История цены" ip
+    JOIN "Список ценных бумаг" s
+        ON s."ID ценной бумаги" = ip."ID ценной бумаги"
+    WHERE ip."ID ценной бумаги" = p_security_id
+    ORDER BY ip."Время" DESC
+    LIMIT 1;
+
+    -- Если цена не найдена
+    IF v_price_close IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    -- 2. Если валюта совпадает — просто возвращаем цену
+    IF v_security_cur = p_currency_id THEN
+        RETURN v_price_close;
+    END IF;
+
+    -- 3. Получаем курс
+    v_rate := get_currency_rate(v_security_cur, p_currency_id);
+
+    IF v_rate IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    -- 4. Итоговая стоимость одной бумаги
+    RETURN ROUND(v_price_close / v_rate, 8);
+END;
+$$;
+
+ALTER FUNCTION public.get_security_value(integer, integer)
+OWNER TO postgres;
+
+CREATE OR REPLACE FUNCTION public.get_security_value_native( -- цена 1 ед. ценной бумаги в собственной валюте
+    p_security_id integer
+)
+RETURNS numeric
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_price_close numeric;
+BEGIN
+    -- Берём последнюю цену закрытия бумаги
+    SELECT ip."Цена закрытия"
+    INTO v_price_close
+    FROM "История цены" ip
+    WHERE ip."ID ценной бумаги" = p_security_id
+    ORDER BY ip."Время" DESC
+    LIMIT 1;
+
+    -- Если цена не найдена
+    IF v_price_close IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    RETURN v_price_close;
+END;
+$$;
+
+ALTER FUNCTION public.get_security_value_native(integer)
+OWNER TO postgres;
+
 
 -- =========================
 -- 3) ТЕСТОВЫЕ ДАННЫЕ
@@ -1084,7 +1330,7 @@ BEGIN
         '1@f.com',
         '2025-12-13'::DATE,
         '1',
-        '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', -- password: 123456
+        '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO',
         1
     )
     RETURNING "ID пользователя" INTO uid2;
@@ -1142,7 +1388,8 @@ BEGIN
     ("Сумма", "ID депозитарного счёта", "ID пользователя", "ID ценной бумаги")
     VALUES
         (5, depo_id2, uid2, 1),
-        (20, depo_id2, uid2, 2);
+        (20, depo_id2, uid2, 2),
+        (52, depo_id2, uid2, 3);
 
     --------------------------------------------------------
     -- 7. БРОКЕРСКИЙ СЧЁТ
@@ -1166,13 +1413,35 @@ BEGIN
     ("Сумма", "ID ценной бумаги", "ID пользователя", "ID типа предложения")
     VALUES
         (8, 1, uid1, 1),   -- продажа от user1
-        (12, 2, uid2, 2);  -- покупка от user2
+        (12, 2, uid2, 1),  -- покупка от user2
+        (12, 3, uid2, 2);  -- покупка от user2
 
     RAISE NOTICE 'Тестовые данные успешно созданы!';
     RAISE NOTICE 'Пользователь 1 (user1): ID = %', uid1;
     RAISE NOTICE 'Пользователь 2 (1@f.com): ID = %', uid2;
 
 END $$;
+
+
+INSERT INTO public."История операций бр. счёта" (
+    "ID операции бр. счёта",
+    "Сумма операции",
+    "Время",
+    "ID брокерского счёта",
+    "ID сотрудника",
+    "ID типа операции бр. счёта"
+) VALUES
+    -- Счёт 1
+    (1, 100000.00, '2025-10-15 09:30:00', 1, 1, 1),  -- Пополнение 100 000 ₽
+    (2, -15000.00, '2025-10-20 14:22:10', 1, 2, 2),  -- Списание 15 000 ₽
+    (3, 50000.00,  '2025-11-05 11:15:00', 1, 1, 1),  -- Пополнение 50 000 ₽
+    (4, -8000.50,  '2025-11-12 16:45:30', 1, 3, 2),  -- Списание 8 000.50 ₽
+
+    -- Счёт 2
+    (5, 75000.00,  '2025-10-18 10:00:00', 2, 2, 1),  -- Пополнение
+    (6, -30000.00, '2025-11-01 13:20:00', 2, 1, 2),  -- Списание
+    (7, 200000.00, '2025-12-01 08:45:00', 2, 3, 1);  -- Пополнение
+
 
 ------------------------------------------------------------
 -- 4. ВЫВОД РЕЗУЛЬТАТОВ ТЕСТОВ
