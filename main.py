@@ -9,6 +9,7 @@ from db.session import get_db
 from core.config import PORT, HOST
 from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, get_current_user
 from pydantic import BaseModel, EmailStr, field_validator
+from decimal import Decimal
 
 from routers.routers import brokerage_accounts_router
 
@@ -138,6 +139,25 @@ class PassportCreateRequest(BaseModel):
     registrationPlace: str
     issueDate: datetime
     issuedBy: str
+
+class ProposalCreateRequest(BaseModel):
+    security_id: int
+    quantity: int
+    proposal_type: int  # теперь это именно ID типа предложения (1 или 2)
+
+    @field_validator("quantity")
+    @classmethod
+    def validate_quantity(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("Количество должно быть больше 0")
+        return v
+
+    @field_validator("proposal_type")
+    @classmethod
+    def validate_proposal_type(cls, v: int) -> int:
+        if v not in (1, 2):
+            raise ValueError("Тип предложения должен быть 1 (Купить) или 2 (Продать)")
+        return v
 
 @app.post("/api/login/user", response_model=Token, summary="Вход пользователя")
 async def login_user(
@@ -336,10 +356,6 @@ async def create_passport(
         "user_id": passport.user_id
     }
 
-
-
-
-
 @app.get("/api/proposal/{proposal_id}")
 async def get_proposal_detail(
     proposal_id: int,
@@ -380,6 +396,116 @@ async def get_proposal_detail(
         },
         "created_at": getattr(proposal, "created_at", None)
     }
+
+@app.get("/api/offers")
+async def get_user_offers(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user["role"] != "user":
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    user_id = current_user["id"]
+
+    result = await db.execute(
+        select(Proposal)
+        .join(Proposal.security)
+        .join(Proposal.proposal_type)
+        .where(Proposal.user_id == user_id)
+        .order_by(Proposal.id.desc())
+    )
+
+    proposals = result.scalars().all()
+
+    return [
+        {
+            "id": p.id,
+            "Тип предложения": p.proposal_type.type,
+            "Название бумаги": p.security.name,
+            "Количество": float(p.amount),
+            "security_id": p.security.id
+        }
+        for p in proposals
+    ]
+
+@app.post("/api/offers", status_code=201)
+async def create_offer(
+        offer: ProposalCreateRequest,  # теперь содержит proposal_type_id: int
+        current_user: dict = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+):
+    if current_user["role"] != "user":
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    # Найдём тип предложения по ID
+    result = await db.execute(
+        select(ProposalType).where(ProposalType.id == offer.proposal_type)
+    )
+    proposal_type_obj = result.scalar_one_or_none()
+    if not proposal_type_obj:
+        raise HTTPException(status_code=404, detail=f"Тип предложения с id={offer.proposal_type} не найден")
+
+    # Создаём предложение
+    proposal = Proposal(
+        amount=offer.quantity,
+        security_id=offer.security_id,
+        user_id=current_user["id"],
+        proposal_type_id=offer.proposal_type  # <- здесь ID напрямую
+    )
+
+    db.add(proposal)
+    await db.commit()
+    await db.refresh(proposal)
+
+    return {
+        "id": proposal.id,
+        "amount": float(proposal.amount),
+        "security_id": proposal.security_id,
+        "proposal_type": {
+            "id": proposal_type_obj.id,
+            "type": proposal_type_obj.type
+        }
+    }
+
+
+@app.get("/api/securities")
+async def get_securities(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Security).order_by(Security.name)
+    )
+    securities = result.scalars().all()
+
+    return [
+        {
+            "id": s.id,
+            "name": s.name,
+            "isin": s.isin,
+            "lot_size": float(s.lot_size)
+        }
+        for s in securities
+    ]
+
+@app.get("/api/proposal-types")
+async def get_proposal_types(db: AsyncSession = Depends(get_db)):
+    """
+    Возвращает список типов предложений для пользователя.
+    Пример ответа:
+    [
+        {"id": 1, "type": "Купить"},
+        {"id": 2, "type": "Продать"}
+    ]
+    """
+    result = await db.execute(select(ProposalType))
+    types = result.scalars().all()
+
+    return [
+        {"id": t.id, "type": t.type}
+        for t in types
+    ]
+
+
+
+
 
 @app.get("/api/user/{user_id}")
 async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
