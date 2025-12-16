@@ -3,6 +3,7 @@ from datetime import timezone, datetime
 from fastapi import FastAPI, Depends, HTTPException, status, Path
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from db.session import get_db
@@ -392,6 +393,116 @@ async def get_proposal_detail(
     }
 
 
+@app.get("/api/broker/proposal/{proposal_id}")
+async def get_proposal_detail(
+    proposal_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    # Явно загружаем все необходимые связи
+    result = await db.execute(
+        select(Proposal)
+        .where(Proposal.id == proposal_id)
+        .options(
+            selectinload(Proposal.user).selectinload(User.passports),
+            selectinload(Proposal.proposal_type),
+            selectinload(Proposal.security)
+        )
+    )
+    
+    proposal = result.scalar_one_or_none()
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Предложение не найдено")
+
+    passports = [
+        {k: v for k, v in p.__dict__.items() if k != "_sa_instance_state"}
+        for p in proposal.user.passports
+    ]
+
+    return {
+        "id": proposal.id,
+        "amount": float(proposal.amount),
+        "proposal_type": {
+            "id": proposal.proposal_type.id,
+            "type": proposal.proposal_type.type
+        },
+        "security": {
+            "id": proposal.security.id,
+            "name": proposal.security.name
+        },
+        "user": {
+            "id": proposal.user.id,
+            "login": proposal.user.login,
+            "email": proposal.user.email,
+            "verification_status_id": proposal.user.verification_status_id,
+            "passports": passports
+        },
+        "created_at": getattr(proposal, "created_at", None)
+    }
+
+@app.get("/api/proposal/")
+async def get_all_proposals(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Проверка авторизации для брокера
+):
+    # Проверка прав доступа (предполагаем, что у брокеров роль "broker")
+    if current_user.get("role") != "broker":
+        raise HTTPException(status_code=403, detail="Доступ запрещен. Требуются права брокера")
+    
+    # Загружаем все предложения со связанными данными
+    result = await db.execute(
+        select(Proposal)
+        .options(
+            selectinload(Proposal.user),
+            selectinload(Proposal.security),
+            selectinload(Proposal.proposal_type)
+        )
+        .order_by(Proposal.id.desc())  # Сортируем по ID в обратном порядке (новые сверху)
+    )
+    proposals = result.scalars().all()
+    
+    # Формируем ответ в формате, который ожидает фронтенд
+    return [
+        {
+            "id": proposal.id,
+            "description": f"{proposal.user.login} - {proposal.security.name} ({float(proposal.amount):,.2f} ₽)",
+            "status": (
+                "active" if proposal.user.verification_status_id == 1 else
+                "blocked" if proposal.user.verification_status_id == 2 else
+                "suspended"
+            )
+        }
+        for proposal in proposals
+    ]
+
+@app.get("/api/staff/{staff_id}")
+async def get_staff_profile(
+    staff_id: int,
+    db: AsyncSession = Depends(get_db),
+    #current_user: dict = Depends(get_current_user)
+):
+    # Проверка, что запрашиваемый ID соответствует текущему пользователю
+    #if current_user.get("user_id") != staff_id:
+    #    raise HTTPException(status_code=403, detail="Доступ запрещен")
+    
+    # Загружаем данные сотрудника с связанными данными
+    result = await db.execute(
+        select(Staff)
+        .where(Staff.id == staff_id)
+        .options(selectinload(Staff.employment_status))
+    )
+    staff = result.scalar_one_or_none()
+    
+    if not staff:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+    
+    # Формируем ответ в формате, ожидаемом фронтендом
+    return {
+        "id": staff.id,
+        "contract_number": staff.contract_number,
+        "employment_status_id": staff.employment_status_id,
+        "rights_level": staff.rights_level,
+        "login": staff.login
+    }
 
 def run():
     # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
