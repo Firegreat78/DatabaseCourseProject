@@ -235,16 +235,6 @@ async def register_user(
         "email": new_user.email,
     }
 
-
-@app.get("/api/user/{user_id}")
-async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
-    return {k: v for k, v in user.__dict__.items() if k != "_sa_instance_state"}
-
-
 @app.get("/api/user/balance")
 async def get_user_balance(
     current_user: dict = Depends(get_current_user),
@@ -391,7 +381,13 @@ async def get_proposal_detail(
         "created_at": getattr(proposal, "created_at", None)
     }
 
-
+@app.get("/api/user/{user_id}")
+async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    return {k: v for k, v in user.__dict__.items() if k != "_sa_instance_state"}
 
 def run():
     # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
