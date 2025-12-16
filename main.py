@@ -126,6 +126,19 @@ class UserRegisterRequest(BaseModel):
             raise ValueError("Пароль должен содержать минимум 6 символов")
         return v
 
+class PassportCreateRequest(BaseModel):
+    lastName: str
+    firstName: str
+    middleName: str
+    series: str
+    number: str
+    gender: str
+    birthDate: datetime
+    birthPlace: str
+    registrationPlace: str
+    issueDate: datetime
+    issuedBy: str
+
 @app.post("/api/login/user", response_model=Token, summary="Вход пользователя")
 async def login_user(
     form_data: LoginRequest,  # Исправлено: form_data: LoginRequest
@@ -285,6 +298,56 @@ async def get_usd_rate(
     except Exception as e:
         print(f"Ошибка получения курса USD: {e}")
         raise HTTPException(status_code=500, detail="Ошибка сервера при получении курса")
+
+@app.post("/api/passport", status_code=status.HTTP_201_CREATED)
+async def create_passport(
+    form_data: PassportCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user["role"] != "user":
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    user_id = current_user["id"]
+
+    # Проверка: есть ли уже паспорт
+    existing = await db.execute(
+        select(Passport).where(Passport.user_id == user_id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=400,
+            detail="Паспорт уже привязан к пользователю"
+        )
+
+    passport = Passport(
+        user_id=user_id,
+        last_name=form_data.lastName,
+        first_name=form_data.firstName,
+        patronymic=form_data.middleName,
+        series=form_data.series,
+        number=form_data.number,
+        gender=form_data.gender,
+        birth_date=form_data.birthDate.date(),
+        birth_place=form_data.birthPlace,
+        registration_place=form_data.registrationPlace,
+        issue_date=form_data.issueDate.date(),
+        issued_by=form_data.issuedBy,
+        is_actual = True
+    )
+
+    db.add(passport)
+    await db.commit()
+    await db.refresh(passport)
+
+    return {
+        "message": "Паспорт успешно создан",
+        "passport_id": passport.id,
+        "user_id": passport.user_id
+    }
+
+
+
 
 
 @app.get("/api/proposal/{proposal_id}")
