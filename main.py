@@ -1,6 +1,6 @@
 import uvicorn
 from datetime import timezone, datetime
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Path
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -95,6 +95,7 @@ async def ping_db(db: AsyncSession = Depends(get_db)):
         return {"connected": True, "result": result.scalar()}
     except Exception as e:
         return {"connected": False, "error": str(e)}
+
 
 
 class LoginRequest(BaseModel):
@@ -222,6 +223,15 @@ async def register_user(
     }
 
 
+@app.get("/api/user/{user_id}")
+async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    return {k: v for k, v in user.__dict__.items() if k != "_sa_instance_state"}
+
+
 @app.get("/api/user/balance")
 async def get_user_balance(
     current_user: dict = Depends(get_current_user),
@@ -275,6 +285,49 @@ async def get_usd_rate(
     except Exception as e:
         print(f"Ошибка получения курса USD: {e}")
         raise HTTPException(status_code=500, detail="Ошибка сервера при получении курса")
+
+
+@app.get("/api/proposal/{proposal_id}")
+async def get_proposal_detail(
+    proposal_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # проверка токена
+):
+    result = await db.execute(select(Proposal).where(Proposal.id == proposal_id))
+    proposal = result.scalar_one_or_none()
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Предложение не найдено")
+
+    # Проверка прав доступа
+    if current_user["role"] != "admin" and proposal.user.id != current_user.get("id"):
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    passports = [
+        {k: v for k, v in p.__dict__.items() if k != "_sa_instance_state"}
+        for p in proposal.user.passports
+    ]
+
+    return {
+        "id": proposal.id,
+        "amount": float(proposal.amount),
+        "proposal_type": {
+            "id": proposal.proposal_type.id,
+            "type": proposal.proposal_type.type
+        },
+        "security": {
+            "id": proposal.security.id,
+            "name": proposal.security.name
+        },
+        "user": {
+            "id": proposal.user.id,
+            "login": proposal.user.login,
+            "email": proposal.user.email,
+            "verification_status_id": proposal.user.verification_status_id,
+            "passports": passports
+        },
+        "created_at": getattr(proposal, "created_at", None)
+    }
+
 
 
 def run():
