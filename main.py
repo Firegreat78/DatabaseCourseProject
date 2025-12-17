@@ -411,10 +411,10 @@ async def get_user_offers(
         select(Proposal)
         .join(Proposal.security)
         .join(Proposal.proposal_type)
-        .where(Proposal.user_id == user_id)
+        .join(BrokerageAccount, Proposal.brokerage_account_id == BrokerageAccount.id)
+        .where(BrokerageAccount.user_id == user_id)
         .order_by(Proposal.id.desc())
     )
-
     proposals = result.scalars().all()
 
     return [
@@ -428,14 +428,14 @@ async def get_user_offers(
         for p in proposals
     ]
 
-@app.post("/api/offers", status_code=201)
+@app.post("/api/offers", status_code=status.HTTP_201_CREATED)
 async def create_offer(
         offer: ProposalCreateRequest,  # теперь содержит proposal_type_id: int
         current_user: dict = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
 ):
     if current_user["role"] != "user":
-        raise HTTPException(status_code=403, detail="Доступ запрещён")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
     # Найдём тип предложения по ID
     result = await db.execute(
@@ -443,7 +443,7 @@ async def create_offer(
     )
     proposal_type_obj = result.scalar_one_or_none()
     if not proposal_type_obj:
-        raise HTTPException(status_code=404, detail=f"Тип предложения с id={offer.proposal_type} не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Тип предложения с id={offer.proposal_type} не найден")
 
     # Создаём предложение
     proposal = Proposal(
@@ -512,7 +512,7 @@ async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
     return {k: v for k, v in user.__dict__.items() if k != "_sa_instance_state"}
 
 def run():

@@ -331,18 +331,34 @@ ALTER TABLE "Тип предложения" ADD CONSTRAINT "Unique_Identifier3" 
 
 -- Table Предложение
 
+CREATE TABLE "Статус предложения"
+(
+	"ID статуса" Serial NOT NULL,
+	"Статус" Character varying(30) NOT NULL
+)
+WITH (autovacuum_enabled=true);
+ALTER TABLE "Статус предложения" ADD CONSTRAINT "Unique_Identifier1337" PRIMARY KEY ("ID статуса");
+
 CREATE TABLE "Предложение"
 (
   "ID предложения" Serial NOT NULL,
   "Сумма" Numeric(12,2) NOT NULL,
   "ID ценной бумаги" Integer NOT NULL,
-  "ID пользователя" Integer NOT NULL,
-  "ID типа предложения" Integer NOT NULL
+  "ID брокерского счёта" Integer NOT NULL,
+  "ID типа предложения" Integer NOT NULL,
+  "ID статуса предложения" Integer NOT NULL
 )
 WITH (autovacuum_enabled=true);
 CREATE INDEX "IX_Relationship20" ON "Предложение" ("ID ценной бумаги");
 CREATE INDEX "IX_Relationship36" ON "Предложение" ("ID типа предложения");
-ALTER TABLE "Предложение" ADD CONSTRAINT "Unique_Identifier11" PRIMARY KEY ("ID предложения","ID пользователя");
+ALTER TABLE "Предложение" ADD CONSTRAINT "Unique_Identifier11" PRIMARY KEY ("ID предложения","ID брокерского счёта");
+
+ALTER TABLE "Предложение"
+ADD CONSTRAINT "FK_Status_Offer"
+FOREIGN KEY ("ID статуса предложения")
+REFERENCES "Статус предложения"("ID статуса")
+ON UPDATE RESTRICT
+ON DELETE RESTRICT;
 
 -- Table Банк
 
@@ -384,46 +400,6 @@ CREATE TABLE currency_rate (
 
     UNIQUE (base_currency_id, target_currency_id, rate_date) -- Один курс на пару в день
 );
-
-
-CREATE TABLE IF NOT EXISTS public."Статус запр. на изм. бал. бр. счёта"
-(
-    "ID статуса запроса" serial PRIMARY KEY,
-    "Описание" varchar(30) NOT NULL
-)
-WITH (autovacuum_enabled = TRUE)
-TABLESPACE pg_default;
-
-ALTER TABLE IF EXISTS public."Статус запр. на изм. бал. бр. счёта" OWNER to postgres;
-
-CREATE TABLE IF NOT EXISTS public."Запрос на изм. баланса бр. счёта"
-(
-    "ID запроса на изм. баланса" serial PRIMARY KEY,
-    "ID статуса запроса" integer NOT NULL,
-    "ID брокерского счёта" integer NOT NULL,
-    "Сумма" numeric(12,2) NOT NULL,
-    "Время создания" timestamp NOT NULL DEFAULT now(),
-    CONSTRAINT "FK_ЗапросБрСчет"
-        FOREIGN KEY ("ID брокерского счёта")
-        REFERENCES public."Брокерский счёт" ("ID брокерского счёта")
-        ON UPDATE CASCADE
-        ON DELETE CASCADE,
-	CONSTRAINT "FK_СтЗапросБрСчет"
-        FOREIGN KEY ("ID статуса запроса")
-        REFERENCES public."Статус запр. на изм. бал. бр. счёта" ("ID статуса запроса")
-        ON UPDATE RESTRICT
-        ON DELETE RESTRICT
-)
-WITH (autovacuum_enabled = TRUE)
-TABLESPACE pg_default;
-
-ALTER TABLE IF EXISTS public."Запрос на изм. баланса бр. счёта" OWNER to postgres;
-
--- Index для быстрого поиска по брокерскому счёту
-CREATE INDEX IF NOT EXISTS "IX_ЗапросБрСчет"
-    ON public."Запрос на изм. баланса бр. счёта" USING btree
-    ("ID брокерского счёта" ASC NULLS LAST)
-    TABLESPACE pg_default;
 
 
 -- Create foreign keys (relationships) section -------------------------------------------------
@@ -526,11 +502,10 @@ ALTER TABLE "История операций бр. счёта"
 
 ALTER TABLE "Предложение"
   ADD CONSTRAINT "Relationship30"
-    FOREIGN KEY ("ID пользователя")
-    REFERENCES "Пользователь" ("ID пользователя")
+    FOREIGN KEY ("ID брокерского счёта")
+    REFERENCES "Брокерский счёт" ("ID брокерского счёта")
       ON DELETE CASCADE
-      ON UPDATE CASCADE
-;
+      ON UPDATE CASCADE;
 
 ALTER TABLE "История операций деп. счёта"
   ADD CONSTRAINT "Relationship31"
@@ -630,19 +605,20 @@ ADD CONSTRAINT "Relationship54"
 INSERT INTO "Статус верификации"("ID статуса верификации", "Статус верификации")
 VALUES
 (1, 'Не подтверждён'),
-(2, 'Подтверждён');
+(2, 'Подтверждён'),
+(3, 'Ожидает верификации');
 
 INSERT INTO "Статус трудоустройства"("ID статуса трудоустройства", "Статус трудоустройства")
 VALUES
 (1, 'Активен'),
-(2, 'Уволен');
+(2, 'Уволен'),
+(3, 'Отпуск');
 
-INSERT INTO "Статус запр. на изм. бал. бр. счёта"("Описание")
+INSERT INTO "Статус предложения"("Статус")
 VALUES
-('На рассмотрении'),
-('Отозвано'),
-('Отказано'),
-('Одобрено');
+('Не подтверждён'),
+('Подтверждён'),
+('Ожидает верификации');
 
 INSERT INTO public."Персонал" (
     "Номер трудового договора",
@@ -651,11 +627,11 @@ INSERT INTO public."Персонал" (
     "Уровень прав",
     "ID статуса трудоустройства"
 ) VALUES
-    ('TD-1001', 'ivanov', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'admin', 1),
-    ('TD-1002', 'petrov', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'staff', 1),
-    ('TD-1003', 'sidorov', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'staff', 2),
-    ('TD-1004', 'smirnova', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'admin', 1),
-    ('TD-1005', 'volkov', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'staff', 2);
+(1,'megaadmin','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO','megaadmin',1), --Мега админ
+(2,'admin','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO','admin',1),     --Админ
+(3,'broker','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO','broker',1),    --Брокер
+(4,'verifier','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO','verifier',1),  --Верификатор
+(5,'system','','system',1);  --Система
 
 
 INSERT INTO "Список валют"("ID валюты", "Код", "Символ")
@@ -711,8 +687,8 @@ VALUES
 -- 8. Типы операций брокерского счёта
 INSERT INTO "Тип операции брокерского счёта"("ID типа операции бр. счёта", "Тип")
 VALUES
-(1, 'Снятие'),
-(2, 'Пополнение');
+(1, 'Пополнение'),
+(2, 'Снятие');
 
 -- 9. Типы предложений
 INSERT INTO "Тип предложения"("ID типа предложения", "Тип")
@@ -724,6 +700,81 @@ VALUES
 -- =========================
 -- 2) ФУНКЦИИ
 -- =========================
+
+CREATE OR REPLACE FUNCTION change_brokerage_account_balance(
+    p_account_id INTEGER,
+    p_amount NUMERIC(12,2),
+    p_staff_id INTEGER DEFAULT 5
+) RETURNS VOID AS $$
+DECLARE
+    v_current_balance NUMERIC(12,2);
+    v_operation_type_id INTEGER;
+BEGIN
+    -- Определяем тип операции: пополнение = 1, вывод = 2
+    -- (у вас должна быть таблица "Тип операции брокерского счёта" с этими ID)
+    v_operation_type_id := CASE WHEN p_amount > 0 THEN 1 ELSE 2 END;
+
+    -- Блокируем строку счёта, чтобы никто одновременно не менял баланс
+    PERFORM 1 FROM "Брокерский счёт" WHERE "ID брокерского счёта" = p_account_id FOR UPDATE;
+
+    -- Получаем текущий баланс
+    SELECT "Баланс" INTO v_current_balance
+    FROM "Брокерский счёт"
+    WHERE "ID брокерского счёта" = p_account_id;
+
+    IF v_current_balance IS NULL THEN
+        RAISE EXCEPTION 'Счёт с ID % не найден', p_account_id;
+    END IF;
+
+    -- Проверка на отрицательный баланс при выводе
+    IF v_current_balance + p_amount < 0 THEN
+        RAISE EXCEPTION 'Недостаточно средств на счёте (текущий баланс: %, запрос: %)',
+                        v_current_balance, p_amount;
+    END IF;
+
+    -- Обновляем баланс
+    UPDATE "Брокерский счёт"
+    SET "Баланс" = "Баланс" + p_amount
+    WHERE "ID брокерского счёта" = p_account_id;
+
+    -- Пишем запись в историю операций
+    INSERT INTO "История операций бр. счёта" (
+        "Сумма операции",
+        "Время",
+        "ID брокерского счёта",
+        "ID сотрудника",
+        "ID типа операции бр. счёта"
+    ) VALUES (
+        p_amount,
+        now(),
+        p_account_id,
+        p_staff_id,
+        v_operation_type_id
+    );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION check_user_verification_status(user_id integer)
+RETURNS boolean AS $$
+DECLARE
+    verification_status_text varchar(20);
+BEGIN
+    -- Получаем статус верификации для указанного пользователя
+    SELECT v."Статус верификации" INTO verification_status_text
+    FROM "Пользователь" u
+    INNER JOIN "Статус верификации" v ON u."ID статуса верификации" = v."ID статуса верификации"
+    WHERE u."ID пользователя" = user_id;
+
+    -- Если запись не найдена, возвращаем false
+    IF NOT FOUND THEN
+        RETURN false;
+    END IF;
+
+    -- Возвращаем true если статус "Подтверждён", иначе false
+    RETURN verification_status_text = 'Подтверждён';
+END;
+$$ LANGUAGE plpgsql;
+
 
 CREATE OR REPLACE FUNCTION get_user_securities(user_id INT)
 RETURNS TABLE (
@@ -774,7 +825,9 @@ AS $BODY$
         ON p."ID ценной бумаги" = b."ID ценной бумаги"
     LEFT JOIN "Тип предложения" t
         ON p."ID типа предложения" = t."ID типа предложения"
-    WHERE p."ID пользователя" = user_id;
+    JOIN "Брокерский счёт" acc
+        ON p."ID брокерского счёта" = acc."ID брокерского счёта"
+    WHERE acc."ID пользователя" = user_id;
 $BODY$;
 
 
@@ -837,32 +890,31 @@ ALTER FUNCTION public.get_exchange_stocks()
     OWNER TO postgres;
 
 
-CREATE OR REPLACE FUNCTION get_brockerage_account_operations(p_account_id integer)
-RETURNS TABLE (
-    "Время" timestamp,
-    "Тип операции" varchar,
-    "Сумма операции" numeric,
-    "Символ валюты" varchar
-)
-LANGUAGE sql
-STABLE
-AS $$
+CREATE OR REPLACE FUNCTION public.get_brokerage_account_operations(
+    p_account_id integer)
+    RETURNS TABLE(
+        "Время" timestamp without time zone,
+        "Тип операции" character varying,
+        "Сумма операции" numeric,
+        "Символ валюты" character varying
+    )
+    LANGUAGE 'sql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+    ROWS 1000
+AS $BODY$
     SELECT
         h."Время",
-        t."Тип",
+        t."Тип" AS "Тип операции",
         h."Сумма операции",
-        c."Символ"
+        c."Символ" AS "Символ валюты"
     FROM "История операций бр. счёта" h
-    JOIN "Тип операции брокерского счёта" t
-        ON h."ID типа операции бр. счёта" = t."ID типа операции бр. счёта"
-    JOIN "Брокерский счёт" b
-        ON h."ID брокерского счёта" = b."ID брокерского счёта"
-    JOIN "Список валют" c
-        ON b."ID валюты" = c."ID валюты"
+    JOIN "Тип операции брокерского счёта" t ON h."ID типа операции бр. счёта" = t."ID типа операции бр. счёта"
+    JOIN "Брокерский счёт" b ON h."ID брокерского счёта" = b."ID брокерского счёта"
+    JOIN "Список валют" c ON b."ID валюты" = c."ID валюты"
     WHERE h."ID брокерского счёта" = p_account_id
     ORDER BY h."Время" DESC;
-$$;
-
+$BODY$;
 
 -- 2.1 get_currency_rate: вернёт КУРС по ID валюты (курс в рублях за единицу валюты).
 CREATE OR REPLACE FUNCTION get_currency_rate(
@@ -1043,24 +1095,26 @@ $$ LANGUAGE plpgsql;
 
 -- 2.5 calc_offer_value: (если нет цены — 0)
 CREATE OR REPLACE FUNCTION calc_offer_value(
-    p_offer_id INT,
-    p_user_id INT
+    p_offer_id INT
 ) RETURNS NUMERIC AS $$
 DECLARE
     paper_id INT;
     qty NUMERIC := 0;
     price NUMERIC := 0;
 BEGIN
+    -- Больше нет "ID пользователя" — ищем только по ID предложения
+    -- "Сумма" в таблице Предложение — это количество (лот/количество бумаг)
     SELECT "ID ценной бумаги", "Сумма"
     INTO paper_id, qty
     FROM "Предложение"
-    WHERE "ID предложения" = p_offer_id
-      AND "ID пользователя" = p_user_id;
+    WHERE "ID предложения" = p_offer_id;
 
+    -- Если предложение не найдено — возвращаем 0
     IF paper_id IS NULL THEN
         RETURN 0;
     END IF;
 
+    -- Берём последнюю цену закрытия
     SELECT "Цена закрытия"
     INTO price
     FROM "История цены"
@@ -1068,7 +1122,8 @@ BEGIN
     ORDER BY "Время" DESC
     LIMIT 1;
 
-    RETURN COALESCE(qty,0) * COALESCE(price,0);
+    -- Если цены нет — возвращаем 0
+    RETURN COALESCE(qty, 0) * COALESCE(price, 0);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -1410,11 +1465,11 @@ BEGIN
     -- 8. ПРЕДЛОЖЕНИЯ НА ПРОДАЖУ/ПОКУПКУ
     --------------------------------------------------------
     INSERT INTO "Предложение"
-    ("Сумма", "ID ценной бумаги", "ID пользователя", "ID типа предложения")
+    ("Сумма", "ID ценной бумаги", "ID брокерского счёта", "ID типа предложения", "ID статуса предложения")
     VALUES
-        (8, 1, uid1, 1),   -- продажа от user1
-        (12, 2, uid2, 1),  -- покупка от user2
-        (12, 3, uid2, 2);  -- покупка от user2
+        (8, 1, broker_id1, 1, 1),   -- продажа от user1
+        (12, 2, broker_id2, 1, 1),  -- покупка от user2
+        (12, 3, broker_id2, 2, 1);  -- покупка от user2
 
     RAISE NOTICE 'Тестовые данные успешно созданы!';
     RAISE NOTICE 'Пользователь 1 (user1): ID = %', uid1;
@@ -1462,7 +1517,7 @@ WITH results AS (
            calc_total_account_value(1, 1)
     UNION ALL
     SELECT 'calc_offer_value',
-           calc_offer_value(1, 1)
+           calc_offer_value(1)
     UNION ALL
     SELECT 'calc_depo_growth',
            calc_depo_growth(1, 1, '1 day')
