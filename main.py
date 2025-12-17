@@ -10,6 +10,7 @@ from db.session import get_db
 from core.config import PORT, HOST
 from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, get_current_user
 from pydantic import BaseModel, EmailStr, field_validator
+from typing import Optional
 
 from routers.routers import brokerage_accounts_router
 
@@ -237,13 +238,7 @@ async def register_user(
     }
 
 
-@app.get("/api/user/{user_id}")
-async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
-    return {k: v for k, v in user.__dict__.items() if k != "_sa_instance_state"}
+
 
 
 @app.get("/api/user/balance")
@@ -478,30 +473,194 @@ async def get_all_proposals(
 async def get_staff_profile(
     staff_id: int,
     db: AsyncSession = Depends(get_db),
-    #current_user: dict = Depends(get_current_user)
 ):
-    # Проверка, что запрашиваемый ID соответствует текущему пользователю
-    #if current_user.get("user_id") != staff_id:
-    #    raise HTTPException(status_code=403, detail="Доступ запрещен")
-    
-    # Загружаем данные сотрудника с связанными данными
     result = await db.execute(
         select(Staff)
-        .where(Staff.id == staff_id)
         .options(selectinload(Staff.employment_status))
+        .where(Staff.id == staff_id)
     )
+
     staff = result.scalar_one_or_none()
-    
+
     if not staff:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
-    
-    # Формируем ответ в формате, ожидаемом фронтендом
+
     return {
         "id": staff.id,
         "contract_number": staff.contract_number,
-        "employment_status_id": staff.employment_status_id,
+        "employment_status": staff.employment_status_id if staff.employment_status else "Неизвестен",
         "rights_level": staff.rights_level,
-        "login": staff.login
+        "login": staff.login,
+    }
+
+@app.get("/api/user/{user_id}")
+async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    return {k: v for k, v in user.__dict__.items() if k != "_sa_instance_state"}
+
+class StaffUpdate(BaseModel):
+    login: Optional[str] = None
+    password: Optional[str] = None
+    contract_number: Optional[str] = None
+    rights_level: Optional[int] = None
+    employment_status_id: Optional[int] = None
+
+@app.put("/api/staff/{staff_id}")
+async def update_staff(
+    staff_id: int,
+    data: StaffUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Staff).where(Staff.id == staff_id)
+    )
+    staff = result.scalar_one_or_none()
+
+    if not staff:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+
+    if data.login is not None:
+        staff.login = data.login
+
+    if data.password is not None and data.password != "":
+        # ⚠️ если есть хэширование — вставь сюда
+        staff.password = data.password
+
+    if data.contract_number is not None:
+        staff.contract_number = data.contract_number
+
+    if data.rights_level is not None:
+        staff.rights_level = data.rights_level
+
+    if data.employment_status_id is not None:
+        staff.employment_status_id = data.employment_status_id
+
+    await db.commit()
+    await db.refresh(staff)
+
+    return {
+        "id": staff.id,
+        "message": "Сотрудник успешно обновлён"
+    }
+
+class StaffCreate(BaseModel):
+    login: str
+    password: str
+    contract_number: str
+    rights_level: str
+    employment_status_id: int
+
+@app.post(
+    "/api/staff/new",
+    status_code=status.HTTP_201_CREATED,
+    summary="Создание сотрудника"
+)
+async def register_staff(
+    form_data: StaffCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    # 1. Проверяем логин
+    result_login = await db.execute(
+        select(Staff).where(Staff.login == form_data.login)
+    )
+    if result_login.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Логин уже занят"
+        )
+
+    # 2. Хэшируем пароль
+    hashed_password = get_password_hash(form_data.password)
+
+    # 3. Создаём сотрудника
+    new_staff = Staff(
+        login=form_data.login,
+        password=hashed_password,
+        contract_number=form_data.contract_number,
+        rights_level=form_data.rights_level,
+        employment_status_id=form_data.employment_status_id,
+    )
+
+    db.add(new_staff)
+    await db.commit()
+    await db.refresh(new_staff)
+
+    # 4. Возвращаем результат
+    return {
+        "message": "Сотрудник успешно создан",
+        "staff_id": new_staff.id,
+        "login": new_staff.login,
+        "rights_level": new_staff.rights_level,
+        "employment_status_id": new_staff.employment_status_id,
+    }
+
+@app.get("/api/user/{user_id}/passport")
+async def get_user_passport(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Passport, User.verification_status_id)
+        .join(User, User.id == Passport.user_id)
+        .where(Passport.user_id == user_id)
+        .where(Passport.is_actual == True)
+    )
+
+    row = result.first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Паспорт не найден")
+
+    passport, verification_status_id = row
+
+    return {
+        "id": passport.id,
+        "user_id": passport.user_id,
+        "verification_status_id": verification_status_id,
+
+        "last_name": passport.last_name,
+        "first_name": passport.first_name,
+        "patronymic": passport.patronymic,
+        "gender": passport.gender,
+        "birth_date": passport.birth_date,
+        "birth_place": passport.birth_place,
+        "series": passport.series,
+        "number": passport.number,
+        "issued_by": passport.issued_by,
+        "issue_date": passport.issue_date,
+        "registration_place": passport.registration_place,
+    }
+
+
+class UserVerificationUpdate(BaseModel):
+    verification_status_id: int
+
+@app.put("/api/user/{user_id}")
+async def update_user_verification_status(
+    user_id: int,
+    data: UserVerificationUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(User).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    user.verification_status_id = data.verification_status_id
+
+    await db.commit()
+    await db.refresh(user)
+
+    return {
+        "id": user.id,
+        "verification_status_id": user.verification_status_id,
+        "message": "Статус пользователя обновлён"
     }
 
 def run():
