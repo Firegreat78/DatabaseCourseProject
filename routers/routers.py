@@ -1,11 +1,12 @@
-from fastapi import Depends, HTTPException, APIRouter
+from fastapi import Depends, HTTPException, APIRouter, status
 from typing import List
-from sqlalchemy import text, insert
+from sqlalchemy import text, insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from db.session import get_db
 from db.auth import get_current_user
 from pydantic import BaseModel, Field, PositiveFloat, validator, field_validator
+from decimal import Decimal
 from db.models.models import (
     Bank,
     BrokerageAccount,
@@ -156,7 +157,7 @@ async def get_brokerage_account_operations(
     # Основной запрос
     query = text("""
         SELECT * 
-        FROM get_brockerage_account_operations(:account_id)
+        FROM get_brokerage_account_operations(:account_id)
     """)
 
     result = await db.execute(query, {"account_id": account_id})
@@ -200,10 +201,6 @@ async def get_brokerage_account(
     }
 
 
-from pydantic import BaseModel, Field, PositiveFloat, validator
-from decimal import Decimal
-from typing import Literal
-
 
 class BalanceChangeRequestCreate(BaseModel):
     amount: Decimal = Field(
@@ -228,14 +225,14 @@ class BalanceChangeRequestCreate(BaseModel):
     }
 
 
-@brokerage_accounts_router.post("/brokerage-accounts/{account_id}/balance-change-requests")
+@brokerage_accounts_router.post("/{account_id}/balance-change-requests")
 async def create_balance_change_request(
     account_id: int,
     data: BalanceChangeRequestCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user = Depends(get_current_user),
 ):
-    # (опционально) проверка, что счёт принадлежит пользователю
+    # 1. Находим счёт и проверяем, что он принадлежит пользователю
     account = await db.scalar(
         select(BrokerageAccount)
         .where(
@@ -245,15 +242,124 @@ async def create_balance_change_request(
     )
 
     if not account:
-        raise HTTPException(status_code=404, detail="Счёт не найден")
+        raise HTTPException(status_code=404, detail="Счёт не найден или не принадлежит вам")
 
+    # 2. Проверяем сумму для вывода (если amount < 0)
+    if data.amount < 0:
+        if account.balance + data.amount < 0:  # balance + (-amount) < 0
+            raise HTTPException(status_code=400, detail="Недостаточно средств на счёте")
+
+    # 3. Изменяем баланс счёта сразу (без транзакции запроса)
+    new_balance = account.balance + data.amount
+    await db.execute(
+        update(BrokerageAccount)
+        .where(BrokerageAccount.id == account_id)
+        .values(balance=new_balance)
+    )
+
+    # 4. Создаём запись в таблице запросов (для истории и аудита)
     request = BrockerageBalanceChangeRequest(
         brokerage_account_id=account_id,
-        status_id=1,  # ⬅️ PENDING
+        status_id=1,  # 1 = На рассмотрении (или "Успешно выполнен", если сразу применяем)
         amount=data.amount,
     )
 
     db.add(request)
     await db.commit()
+    await db.refresh(account)  # обновляем объект счёта
 
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "new_balance": float(account.balance),  # возвращаем новый баланс
+        "message": "Баланс успешно изменён"
+    }
+
+
+@brokerage_accounts_router.get("/user_verification_status/{user_id}")
+async def get_verification_status(
+    user_id: int,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Проверяет статус верификации пользователя по ID.
+    Доступно только авторизованным пользователям.
+    """
+    if current_user["id"] != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Вы можете проверять только свой статус верификации"
+        )
+
+    try:
+        query = text("SELECT public.check_user_verification_status(:user_id)")
+        result = await db.execute(query, {"user_id": user_id})
+        is_verified_raw = result.scalar()
+
+        is_verified = bool(is_verified_raw)
+
+        return {"is_verified": is_verified}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка при проверке статуса верификации: {e}"
+        )
+
+
+@brokerage_accounts_router.patch("/brokerage-accounts/{account_id}/balance-change-requests/{request_id}")
+async def cancel_request(
+    account_id: int,
+    request_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    request = await db.get(BrockerageBalanceChangeRequest, request_id)
+    if not request or request.brokerage_account_id != account_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Запрос не найден")
+
+    request_cancelled = 2
+    request.status_id = request_cancelled
+
+    await db.commit()
+    return {"success": True}
+
+
+@brokerage_accounts_router.post("/brokerage-accounts/{account_id}/balance-change-requests")
+async def create_balance_change_request(
+    account_id: int,
+    data: BalanceChangeRequestCreate,  # ожидает { "amount": float }
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    # 1. Находим счёт и проверяем принадлежность пользователю
+    account = await db.scalar(
+        select(BrokerageAccount)
+        .where(
+            BrokerageAccount.id == account_id,
+            BrokerageAccount.user_id == current_user["id"]
+        )
+    )
+
+    if not account:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден или не принадлежит вам")
+
+    # 2. Проверка баланса при выводе (amount < 0)
+    if data.amount < 0 and account.balance + data.amount < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недостаточно средств на счёте")
+
+    # 3. Создаём запись в таблице запросов
+    request = BrockerageBalanceChangeRequest(
+        brokerage_account_id=account_id,
+        status_id=1,  # "На рассмотрении"
+        amount=data.amount,
+    )
+
+    db.add(request)
+    await db.commit()
+    await db.refresh(request)
+
+    return {
+        "status": "ok",
+        "request_id": request.id,  # возвращаем ID нового запроса
+        "message": "Запрос на изменение баланса создан"
+    }

@@ -36,16 +36,16 @@ from db.models.models import (
 )
 
 app = FastAPI()
-app.include_router(brokerage_accounts_router)
-
 # Разрешаем React dev сервер
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+app.include_router(brokerage_accounts_router)
 
 TABLES = {
     "depository_account_operation_type": DepositoryAccountOperationType,
@@ -127,7 +127,7 @@ class UserRegisterRequest(BaseModel):
 
 @app.post("/api/login/user", response_model=Token, summary="Вход пользователя")
 async def login_user(
-    form_data: LoginRequest,  # Исправлено: form_data: LoginRequest
+    form_data: LoginRequest,
     db: AsyncSession = Depends(get_db)
 ):
     user = await authenticate_user(db, form_data.login, form_data.password)  # form_data
@@ -138,7 +138,11 @@ async def login_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token = create_access_token(
-        data={"sub": user.login, "role": "user", "user_id": user.id}
+        data={
+            "sub": user.login,
+            "role": "user",
+            "user_id": user.id
+        }
     )
     return {
         "access_token": access_token,
@@ -150,20 +154,32 @@ async def login_user(
 
 @app.post("/api/login/staff", response_model=Token, summary="Вход сотрудника")
 async def login_staff(
-    form_data: LoginRequest,  # Исправлено: form_data: LoginRequest
+    form_data: LoginRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    staff = await authenticate_staff(db, form_data.login, form_data.password)  # form_data
+    staff = await authenticate_staff(db, form_data.login, form_data.password)
     if not staff:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный логин или пароль",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    role_str = staff.rights_level.strip() if hasattr(staff, "rights_level") else None
     access_token = create_access_token(
-        data={"sub": staff.login, "role": "staff", "staff_id": staff.id}
+        data={
+            "sub": staff.login,
+            "staff_id": staff.id,
+            "role": role_str,
+            "is_staff": True
+        }
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    js = {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": staff.id,
+        "role": role_str  # ← именно число: 1, 2, 3 или 4
+    }
+    return js
 
 
 @app.post("/api/register/user", status_code=status.HTTP_201_CREATED, summary="Регистрация пользователя")
