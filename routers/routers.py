@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, PositiveFloat, validator, field_validator
 from db.models.models import (
     Bank,
     BrokerageAccount,
-    BrockerageBalanceChangeRequest,
     BrokerageAccountHistory,
     BrokerageAccountOperationType,
     Currency,
