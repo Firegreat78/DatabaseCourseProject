@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload
 from db.session import get_db
 from core.config import PORT, HOST
 from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, get_current_user
@@ -244,7 +244,7 @@ async def register_user(
         password=hashed_password,
         email=form_data.email,
         registration_date=datetime.now(timezone.utc).date(),
-        verification_status_id=1,  #
+        verification_status_id=3,  #
     )
 
     db.add(new_user)
@@ -544,43 +544,51 @@ async def get_proposal_detail(
             "id": proposal.proposal_type.id,
             "type": proposal.proposal_type.type
         },
+        "status": proposal.status_id,
         "security": {
             "id": proposal.security.id,
             "name": proposal.security.name
         },
-        "created_at": getattr(proposal, "created_at", None)
+        "account": proposal.brokerage_account_id,
     }
 
-@app.get("/api/proposal/")
+@app.get("/api/proposal")
 async def get_all_proposals(
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Проверка авторизации для брокера
+    current_user: dict = Depends(get_current_user)
 ):
-    # Проверка прав доступа (предполагаем, что у брокеров роль "broker")
     if current_user.get("role") != "broker":
-        raise HTTPException(status_code=403, detail="Доступ запрещен. Требуются права брокера")
-    
-    # Загружаем все предложения со связанными данными
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+
     result = await db.execute(
         select(Proposal)
         .options(
             selectinload(Proposal.security),
             selectinload(Proposal.proposal_type)
         )
-        .order_by(Proposal.id.desc())  # Сортируем по ID в обратном порядке (новые сверху)
+        .order_by(Proposal.id.desc())
     )
+
     proposals = result.scalars().all()
-    
-    # Формируем ответ в формате, который ожидает фронтенд
+
+    # Возвращаем пустой список, если заявок нет
+    if not proposals:
+        return []
+
     return [
         {
             "id": proposal.id,
-            "description": f"{proposal.brokerage_account_id} - {proposal.security.name} ({float(proposal.amount):,.2f} ₽)",
-            "status": (
-                "active" if proposal.user.verification_status_id == 1 else
-                "blocked" if proposal.user.verification_status_id == 2 else
-                "suspended"
-            )
+            "amount": float(proposal.amount),
+            "proposal_type": {
+                "id": proposal.proposal_type.id,
+                "type": proposal.proposal_type.type
+            },
+            
+            "security": {
+                "id": proposal.security.id,
+                "name": proposal.security.name
+            },
+            "account": proposal.brokerage_account_id,
         }
         for proposal in proposals
     ]
@@ -629,13 +637,21 @@ async def update_staff(
 
     if not staff:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
+        
+    result_login = await db.execute(
+        select(Staff).where(Staff.login == data.login, Staff.id != staff_id)
+    )
+    if result_login.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Логин уже занят"
+        )
 
     if data.login is not None:
         staff.login = data.login
 
     if data.password is not None and data.password != "":
-        # ⚠️ если есть хэширование — вставь сюда
-        staff.password = data.password
+        staff.password = get_password_hash(data.password)
 
     if data.contract_number is not None:
         staff.contract_number = data.contract_number
@@ -769,6 +785,56 @@ async def update_user_verification_status(
         "id": user.id,
         "verification_status_id": user.verification_status_id,
         "message": "Статус пользователя обновлён"
+    }
+
+class BrokerageAccountCreateRequest(BaseModel):
+    bank_id: int
+    currency_id: int
+
+@app.post("/api/brokerage-accounts/")
+async def create_brokerage_account(
+    account_data: BrokerageAccountCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user["role"] != "user":
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    # Проверяем банк
+    result = await db.execute(select(Bank).where(Bank.id == account_data.bank_id))
+    bank = result.scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail="Банк не найден")
+
+    # Проверяем валюту
+    result = await db.execute(select(Currency).where(Currency.id == account_data.currency_id))
+    currency = result.scalar_one_or_none()
+    if not currency:
+        raise HTTPException(status_code=404, detail="Валюта не найдена")
+
+    # Создаём счёт с балансом 0
+    new_account = BrokerageAccount(
+        balance=Decimal("0.00"),
+        bank_id=bank.id,
+        bik=bank.bik,
+        inn = " ",
+        currency_id=currency.id,
+        user_id=current_user["id"]
+    )
+
+    db.add(new_account)
+    await db.commit()
+    await db.refresh(new_account)
+
+    return {
+        "account_id": new_account.id,
+        "balance": float(new_account.balance),
+        "bank_id": bank.id,
+        "bank_name": bank.name,
+        "bik": bank.bik,
+        "currency_id": currency.id,
+        "currency_symbol": currency.symbol,
+        "user_id": new_account.user_id
     }
 
 def run():
