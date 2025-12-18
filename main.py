@@ -837,6 +837,69 @@ async def create_brokerage_account(
         "user_id": new_account.user_id
     }
 
+class StockOut(BaseModel):
+    id: int
+    ticker: str
+    price: Decimal
+    currency: str
+    change: float
+
+    class Config:
+        from_attributes = True
+
+
+class StockCreate(BaseModel):
+    ticker: str
+    price: Decimal
+    currency: str
+
+@app.post("/api/exchange/stocks", status_code=status.HTTP_201_CREATED)
+async def create_stock(
+    data: StockCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    # Проверяем валюту
+    result = await db.execute(
+        select(Currency).where(Currency.code == data.currency)
+    )
+    currency = result.scalar_one_or_none()
+
+    if not currency:
+        raise HTTPException(
+            status_code=400,
+            detail="Валюта не найдена",
+        )
+
+    # Проверяем, существует ли акция
+    result = await db.execute(
+        select(Security).where(Security.isin == data.ticker)
+    )
+    exists = result.scalar_one_or_none()
+
+    if exists:
+        raise HTTPException(
+            status_code=400,
+            detail="Акция с таким тикером уже существует",
+        )
+
+    # Создаём акцию
+    security = Security(
+        name=data.ticker,
+        isin=data.ticker,
+        lot_size=Decimal("1.00"),
+        dividend_payment=False,
+        currency_id=currency.id,
+    )
+    db.add(security)
+    await db.commit()
+    await db.refresh(security)
+
+    return {
+        "message": "Акция добавлена",
+        "id": security.id,
+    }
+
+
 def run():
     # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
     uvicorn.run("main:app", host=HOST, port=PORT, reload=True)

@@ -155,7 +155,7 @@ async def get_brokerage_account_operations(
     # Основной запрос
     query = text("""
         SELECT * 
-        FROM get_brockerage_account_operations(:account_id)
+        FROM get_brokerage_account_operations(:account_id)
     """)
 
     result = await db.execute(query, {"account_id": account_id})
