@@ -5,11 +5,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload, joinedload
 from db.session import get_db
 from core.config import PORT, HOST
 from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, get_current_user
 from pydantic import BaseModel, EmailStr, field_validator
 from decimal import Decimal
+from typing import Optional
+
 
 from routers.routers import brokerage_accounts_router
 
@@ -241,7 +244,7 @@ async def register_user(
         password=hashed_password,
         email=form_data.email,
         registration_date=datetime.now(timezone.utc).date(),
-        verification_status_id=1,  #
+        verification_status_id=3,  #
     )
 
     db.add(new_user)
@@ -514,6 +517,388 @@ async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     return {k: v for k, v in user.__dict__.items() if k != "_sa_instance_state"}
+
+@app.get("/api/broker/proposal/{proposal_id}")
+async def get_proposal_detail(
+    proposal_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    # Явно загружаем все необходимые связи
+    result = await db.execute(
+        select(Proposal)
+        .where(Proposal.id == proposal_id)
+        .options(
+            selectinload(Proposal.proposal_type),
+            selectinload(Proposal.security)
+        )
+    )
+    
+    proposal = result.scalar_one_or_none()
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Предложение не найдено")
+
+    return {
+        "id": proposal.id,
+        "amount": float(proposal.amount),
+        "proposal_type": {
+            "id": proposal.proposal_type.id,
+            "type": proposal.proposal_type.type
+        },
+        "status": proposal.status_id,
+        "security": {
+            "id": proposal.security.id,
+            "name": proposal.security.name
+        },
+        "account": proposal.brokerage_account_id,
+    }
+
+@app.get("/api/proposal")
+async def get_all_proposals(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user.get("role") != "broker":
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+
+    result = await db.execute(
+        select(Proposal)
+        .options(
+            selectinload(Proposal.security),
+            selectinload(Proposal.proposal_type)
+        )
+        .order_by(Proposal.id.desc())
+    )
+
+    proposals = result.scalars().all()
+
+    # Возвращаем пустой список, если заявок нет
+    if not proposals:
+        return []
+
+    return [
+        {
+            "id": proposal.id,
+            "amount": float(proposal.amount),
+            "proposal_type": {
+                "id": proposal.proposal_type.id,
+                "type": proposal.proposal_type.type
+            },
+            
+            "security": {
+                "id": proposal.security.id,
+                "name": proposal.security.name
+            },
+            "account": proposal.brokerage_account_id,
+        }
+        for proposal in proposals
+    ]
+
+@app.get("/api/staff/{staff_id}")
+async def get_staff_profile(
+    staff_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Staff)
+        .options(selectinload(Staff.employment_status))
+        .where(Staff.id == staff_id)
+    )
+
+    staff = result.scalar_one_or_none()
+
+    if not staff:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+
+    return {
+        "id": staff.id,
+        "contract_number": staff.contract_number,
+        "employment_status": staff.employment_status_id if staff.employment_status else "Неизвестен",
+        "rights_level": staff.rights_level,
+        "login": staff.login,
+    }
+
+class StaffUpdate(BaseModel):
+    login: Optional[str] = None
+    password: Optional[str] = None
+    contract_number: Optional[str] = None
+    rights_level: Optional[int] = None
+    employment_status_id: Optional[int] = None
+
+@app.put("/api/staff/{staff_id}")
+async def update_staff(
+    staff_id: int,
+    data: StaffUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Staff).where(Staff.id == staff_id)
+    )
+    staff = result.scalar_one_or_none()
+
+    if not staff:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+        
+    result_login = await db.execute(
+        select(Staff).where(Staff.login == data.login, Staff.id != staff_id)
+    )
+    if result_login.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Логин уже занят"
+        )
+
+    if data.login is not None:
+        staff.login = data.login
+
+    if data.password is not None and data.password != "":
+        staff.password = get_password_hash(data.password)
+
+    if data.contract_number is not None:
+        staff.contract_number = data.contract_number
+
+    if data.rights_level is not None:
+        staff.rights_level = data.rights_level
+
+    if data.employment_status_id is not None:
+        staff.employment_status_id = data.employment_status_id
+
+    await db.commit()
+    await db.refresh(staff)
+
+    return {
+        "id": staff.id,
+        "message": "Сотрудник успешно обновлён"
+    }
+
+class StaffCreate(BaseModel):
+    login: str
+    password: str
+    contract_number: str
+    rights_level: str
+    employment_status_id: int
+
+@app.post(
+    "/api/staff/new",
+    status_code=status.HTTP_201_CREATED,
+    summary="Создание сотрудника"
+)
+async def register_staff(
+    form_data: StaffCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    # 1. Проверяем логин
+    result_login = await db.execute(
+        select(Staff).where(Staff.login == form_data.login)
+    )
+    if result_login.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Логин уже занят"
+        )
+
+    # 2. Хэшируем пароль
+    hashed_password = get_password_hash(form_data.password)
+
+    # 3. Создаём сотрудника
+    new_staff = Staff(
+        login=form_data.login,
+        password=hashed_password,
+        contract_number=form_data.contract_number,
+        rights_level=form_data.rights_level,
+        employment_status_id=form_data.employment_status_id,
+    )
+
+    db.add(new_staff)
+    await db.commit()
+    await db.refresh(new_staff)
+
+    # 4. Возвращаем результат
+    return {
+        "message": "Сотрудник успешно создан",
+        "staff_id": new_staff.id,
+        "login": new_staff.login,
+        "rights_level": new_staff.rights_level,
+        "employment_status_id": new_staff.employment_status_id,
+    }
+
+@app.get("/api/user/{user_id}/passport")
+async def get_user_passport(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Passport, User.verification_status_id)
+        .join(User, User.id == Passport.user_id)
+        .where(Passport.user_id == user_id)
+        .where(Passport.is_actual == True)
+    )
+
+    row = result.first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Паспорт не найден")
+
+    passport, verification_status_id = row
+
+    return {
+        "id": passport.id,
+        "user_id": passport.user_id,
+        "verification_status_id": verification_status_id,
+
+        "last_name": passport.last_name,
+        "first_name": passport.first_name,
+        "patronymic": passport.patronymic,
+        "gender": passport.gender,
+        "birth_date": passport.birth_date,
+        "birth_place": passport.birth_place,
+        "series": passport.series,
+        "number": passport.number,
+        "issued_by": passport.issued_by,
+        "issue_date": passport.issue_date,
+        "registration_place": passport.registration_place,
+    }
+
+
+class UserVerificationUpdate(BaseModel):
+    verification_status_id: int
+
+@app.put("/api/user/{user_id}")
+async def update_user_verification_status(
+    user_id: int,
+    data: UserVerificationUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(User).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    user.verification_status_id = data.verification_status_id
+
+    await db.commit()
+    await db.refresh(user)
+
+    return {
+        "id": user.id,
+        "verification_status_id": user.verification_status_id,
+        "message": "Статус пользователя обновлён"
+    }
+
+class BrokerageAccountCreateRequest(BaseModel):
+    bank_id: int
+    currency_id: int
+
+@app.post("/api/brokerage-accounts/")
+async def create_brokerage_account(
+    account_data: BrokerageAccountCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user["role"] != "user":
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+    # Проверяем банк
+    result = await db.execute(select(Bank).where(Bank.id == account_data.bank_id))
+    bank = result.scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail="Банк не найден")
+
+    # Проверяем валюту
+    result = await db.execute(select(Currency).where(Currency.id == account_data.currency_id))
+    currency = result.scalar_one_or_none()
+    if not currency:
+        raise HTTPException(status_code=404, detail="Валюта не найдена")
+
+    # Создаём счёт с балансом 0
+    new_account = BrokerageAccount(
+        balance=Decimal("0.00"),
+        bank_id=bank.id,
+        bik=bank.bik,
+        inn = " ",
+        currency_id=currency.id,
+        user_id=current_user["id"]
+    )
+
+    db.add(new_account)
+    await db.commit()
+    await db.refresh(new_account)
+
+    return {
+        "account_id": new_account.id,
+        "balance": float(new_account.balance),
+        "bank_id": bank.id,
+        "bank_name": bank.name,
+        "bik": bank.bik,
+        "currency_id": currency.id,
+        "currency_symbol": currency.symbol,
+        "user_id": new_account.user_id
+    }
+
+class StockOut(BaseModel):
+    id: int
+    ticker: str
+    price: Decimal
+    currency: str
+    change: float
+
+    class Config:
+        from_attributes = True
+
+
+class StockCreate(BaseModel):
+    ticker: str
+    price: Decimal
+    currency: str
+
+@app.post("/api/exchange/stocks", status_code=status.HTTP_201_CREATED)
+async def create_stock(
+    data: StockCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    # Проверяем валюту
+    result = await db.execute(
+        select(Currency).where(Currency.code == data.currency)
+    )
+    currency = result.scalar_one_or_none()
+
+    if not currency:
+        raise HTTPException(
+            status_code=400,
+            detail="Валюта не найдена",
+        )
+
+    # Проверяем, существует ли акция
+    result = await db.execute(
+        select(Security).where(Security.isin == data.ticker)
+    )
+    exists = result.scalar_one_or_none()
+
+    if exists:
+        raise HTTPException(
+            status_code=400,
+            detail="Акция с таким тикером уже существует",
+        )
+
+    # Создаём акцию
+    security = Security(
+        name=data.ticker,
+        isin=data.ticker,
+        lot_size=Decimal("1.00"),
+        dividend_payment=False,
+        currency_id=currency.id,
+    )
+    db.add(security)
+    await db.commit()
+    await db.refresh(security)
+
+    return {
+        "message": "Акция добавлена",
+        "id": security.id,
+    }
+
 
 def run():
     # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)

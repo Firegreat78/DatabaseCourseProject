@@ -15,10 +15,20 @@ class Base(DeclarativeBase):
     registry = reg
 
 
+class ProposalStatus(Base):
+    __tablename__ = "Статус предложения"
+
+    id = Column("ID статуса", Integer, primary_key=True, nullable=False, autoincrement=True)
+    status = Column("Статус", String(30), nullable=False)
+
+    def __repr__(self):
+        return f"<ProposalStatus(id={self.id}, status={self.status})>"
+
+
 class DepositoryAccountOperationType(Base):
     __tablename__ = "Тип операции депозитарного счёта"
 
-    id = Column("ID типа операции деп. счёта", Integer, primary_key=True, nullable=False)
+    id = Column("ID типа операции деп. счёта", Integer, primary_key=True, nullable=False, autoincrement=True)
     type = Column("Тип", String(15), nullable=False)
 
     def __repr__(self):
@@ -144,15 +154,21 @@ class Proposal(Base):
     id = Column("ID предложения", Integer, primary_key=True, nullable=False)
     amount = Column("Сумма", Numeric(12,2), nullable=False)
     security_id = Column("ID ценной бумаги", Integer, ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
-    user_id = Column("ID пользователя", Integer, ForeignKey("Пользователь.ID пользователя", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
-    proposal_type_id = Column("ID типа предложения", Integer, ForeignKey("Тип предложения.ID типа предложения", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
+    brokerage_account_id = Column("ID брокерского счёта", Integer, ForeignKey("Брокерский счёт.ID брокерского счёта", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
+    proposal_type_id = Column("ID типа предложения", Integer,
+                              ForeignKey("Тип предложения.ID типа предложения", ondelete="RESTRICT",
+                                         onupdate="RESTRICT"), nullable=False)
+    status_id = Column("ID статуса предложения", Integer,
+                       ForeignKey("Статус предложения.ID статуса", ondelete="RESTRICT", onupdate="RESTRICT"),
+                       nullable=False, default=1)
 
     security = relationship("Security", backref="proposals")
-    user = relationship("User", backref="proposals")
+    brokerage_account = relationship("BrokerageAccount", backref="proposals")
     proposal_type = relationship("ProposalType", backref="proposals")
+    status = relationship("ProposalStatus", backref="proposals")
 
     def __repr__(self):
-        return f"<Proposal(id={self.id}, amount={self.amount}, security_id={self.security_id}, user_id={self.user_id}, proposal_type_id={self.proposal_type_id})>"
+        return f"<Proposal(id={self.id}, amount={self.amount}, security_id={self.security_id}, brokerage_account_id={self.brokerage_account_id}, proposal_type_id={self.proposal_type_id})>"
 
 
 class BrokerageAccount(Base):
@@ -184,11 +200,6 @@ class BrokerageAccount(Base):
         nullable=False
     )
 
-    balance_change_requests = relationship(
-        "BrockerageBalanceChangeRequest",
-        back_populates="brokerage_account",
-        cascade="all, delete-orphan"
-    )
 
     def __repr__(self):
         return f"<BrokerageAccount(id={self.id}, balance={self.balance}, inn='{self.inn}', bik='{self.bik}', bank_id={self.bank_id}, currency_id={self.currency_id})>"
@@ -481,67 +492,3 @@ class CurrencyRate(Base):
         )
 
 
-class BrockerageBalanceChangeRequestStatus(Base):
-    __tablename__ = "Статус запр. на изм. бал. бр. счёта"
-
-    id = Column("ID статуса запроса", Integer, primary_key=True, autoincrement=True)
-    description = Column("Описание", String(30), nullable=False)
-
-    # Обратная связь — исправлено имя класса
-    requests = relationship(
-        "BrockerageBalanceChangeRequest",  # правильное имя класса
-        back_populates="status"
-    )
-
-
-class BrockerageBalanceChangeRequest(Base):
-    __tablename__ = "Запрос на изм. баланса бр. счёта"
-    __table_args__ = {"schema": "public"}
-
-    id = Column(
-        "ID запроса на изм. баланса",
-        Integer,
-        primary_key=True,
-        autoincrement=True
-    )
-
-    brokerage_account_id = Column(
-        "ID брокерского счёта",
-        Integer,
-        ForeignKey(
-            "Брокерский счёт.ID брокерского счёта",
-            onupdate="CASCADE",
-            ondelete="CASCADE"
-        ),
-        nullable=False
-    )
-
-    status_id = Column(
-        "ID статуса запроса",
-        Integer,
-        ForeignKey(
-            "Статус запр. на изм. бал. бр. счёта.ID статуса запроса",
-            onupdate="RESTRICT",
-            ondelete="RESTRICT"
-        ),
-        nullable=False
-    )
-
-    amount = Column("Сумма", Numeric(12, 2), nullable=False)
-
-    created_at = Column(
-        "Время создания",
-        DateTime,
-        server_default=func.now(),
-        nullable=False
-    )
-
-    brokerage_account = relationship(
-        "BrokerageAccount",
-        back_populates="balance_change_requests"
-    )
-
-    status = relationship(
-        "BrockerageBalanceChangeRequestStatus",
-        back_populates="requests"
-    )
