@@ -273,7 +273,7 @@ ALTER TABLE "Брокерский счёт" ADD CONSTRAINT "Unique_Identifier12"
 
 CREATE TABLE "История операций бр. счёта"
 (
-  "ID операции бр. счёта" Serial NOT NULL,
+  "ID операции бр. счёта" Serial NOT NULL UNIQUE,
   "Сумма операции" Numeric(12,2) NOT NULL,
   "Время" Timestamp(6) NOT NULL,
   "ID брокерского счёта" Integer NOT NULL,
@@ -343,6 +343,7 @@ CREATE TABLE "Предложение"
 (
   "ID предложения" Serial NOT NULL,
   "Сумма" Numeric(12,2) NOT NULL,
+  "Сумма в валюте" Numeric(12, 2) NOT NULL,
   "ID ценной бумаги" Integer NOT NULL,
   "ID брокерского счёта" Integer NOT NULL,
   "ID типа предложения" Integer NOT NULL,
@@ -602,17 +603,17 @@ ADD CONSTRAINT "Relationship54"
     ON UPDATE RESTRICT;
 
 
-INSERT INTO "Статус верификации"("ID статуса верификации", "Статус верификации")
+INSERT INTO "Статус верификации"("Статус верификации")
 VALUES
-(1, 'Не подтверждён'),
-(2, 'Подтверждён'),
-(3, 'Ожидает верификации');
+('Не подтверждён'),
+('Подтверждён'),
+('Ожидает верификации');
 
-INSERT INTO "Статус трудоустройства"("ID статуса трудоустройства", "Статус трудоустройства")
+INSERT INTO "Статус трудоустройства"("Статус трудоустройства")
 VALUES
-(1, 'Активен'),
-(2, 'Уволен'),
-(3, 'Отпуск');
+('Активен'),
+('Уволен'),
+('Отпуск');
 
 INSERT INTO "Статус предложения"("Статус")
 VALUES
@@ -634,22 +635,22 @@ INSERT INTO public."Персонал" (
 (5,'system','','system',1);  --Система
 
 
-INSERT INTO "Список валют"("ID валюты", "Код", "Символ")
+INSERT INTO "Список валют"("Код", "Символ")
 VALUES
-(1, 'RUB', '₽'),
-(2, 'USD', '$');
+('RUB', '₽'),
+('USD', '$');
 
 -- 5. Банки
-INSERT INTO "Банк"("ID банка", "Наименование", "ИНН", "ОГРН", "БИК", "Срок действия лицензии")
+INSERT INTO "Банк"("Наименование", "ИНН", "ОГРН", "БИК", "Срок действия лицензии")
 VALUES
-(1, 'Сбербанк', '1234567890', '102030405060', '044525225', '2030-12-31');
+('Сбербанк', '1234567890', '102030405060', '044525225', '2030-12-31');
 
 -- 6. Ценные бумаги
-INSERT INTO "Список ценных бумаг"("ID ценной бумаги", "Наименование", "Размер лота", "ISIN", "Выплата дивидендов", "ID валюты")
+INSERT INTO "Список ценных бумаг"("Наименование", "Размер лота", "ISIN", "Выплата дивидендов", "ID валюты")
 VALUES
-(1, 'Газпром', 10, 'RU0007661625', TRUE, 1),
-(2, 'Сбербанк', 5, 'RU0009029540', TRUE, 1),
-(3, 'Биткоин', 4, 'BTC', FALSE, 2);
+('Газпром', 10, 'RU0007661625', TRUE, 1),
+('Сбербанк', 5, 'RU0009029540', TRUE, 1),
+('Биткоин', 1, 'BTC', FALSE, 2);
 
 INSERT INTO "История цены"
 ("Время", "Цена открытия", "Цена закрытия", "Цена минимальная", "Цена максимальная", "ID ценной бумаги")
@@ -665,7 +666,6 @@ VALUES
 ('2025-12-11 00:00:00', 300.50, 305.80, 300.00, 307.00, 1),
 ('2025-12-12 00:00:00', 305.80, 310.20, 304.50, 311.50, 1),
 ('2025-12-13 00:00:00', 310.20, 315.60, 309.80, 317.00, 1),
-
 -- Ценная бумага 2 (например, Газпром)
 ('2025-12-04 00:00:00', 145.30, 147.80, 144.50, 149.00, 2),
 ('2025-12-05 00:00:00', 147.80, 150.20, 146.90, 151.50, 2),
@@ -676,25 +676,36 @@ VALUES
 ('2025-12-10 00:00:00', 158.60, 156.30, 155.50, 159.00, 2),
 ('2025-12-11 00:00:00', 156.30, 160.80, 156.00, 162.10, 2),
 ('2025-12-12 00:00:00', 160.80, 164.50, 160.20, 165.90, 2),
-('2025-12-13 00:00:00', 164.50, 168.20, 163.80, 169.50, 2);
+('2025-12-13 00:00:00', 164.50, 168.20, 163.80, 169.50, 2),
+-- Ценная бумага 3 (Биткоин)
+('2025-12-04 00:00:00', 92000.00, 93500.00, 91800.00, 94000.00, 3),
+('2025-12-05 00:00:00', 93500.00, 92800.00, 92200.00, 94200.00, 3),
+('2025-12-06 00:00:00', 92800.00, 91000.00, 90500.00, 93200.00, 3),
+('2025-12-07 00:00:00', 91000.00, 92500.00, 90800.00, 93500.00, 3),
+('2025-12-08 00:00:00', 92500.00, 94000.00, 92200.00, 94800.00, 3),
+('2025-12-09 00:00:00', 94000.00, 93500.00, 93000.00, 94500.00, 3),
+('2025-12-10 00:00:00', 93500.00, 92000.00, 91500.00, 93800.00, 3),
+('2025-12-11 00:00:00', 92000.00, 90500.00, 90000.00, 92500.00, 3),
+('2025-12-12 00:00:00', 90500.00, 89000.00, 88500.00, 91000.00, 3),
+('2025-12-13 00:00:00', 89000.00, 87500.00, 87000.00, 89500.00, 3);
 
 -- 7. Типы операций депозитарного счёта
-INSERT INTO "Тип операции депозитарного счёта"("ID типа операции деп. счёта", "Тип")
+INSERT INTO "Тип операции депозитарного счёта"("Тип")
 VALUES
-(1, 'Покупка'),
-(2, 'Продажа');
+('Покупка'),
+('Продажа');
 
 -- 8. Типы операций брокерского счёта
-INSERT INTO "Тип операции брокерского счёта"("ID типа операции бр. счёта", "Тип")
+INSERT INTO "Тип операции брокерского счёта"("Тип")
 VALUES
-(1, 'Пополнение'),
-(2, 'Снятие');
+('Пополнение'),
+('Снятие');
 
 -- 9. Типы предложений
-INSERT INTO "Тип предложения"("ID типа предложения", "Тип")
+INSERT INTO "Тип предложения"("Тип")
 VALUES
-(1, 'Покупка'),
-(2, 'Продажа');
+('Покупка'),
+('Продажа');
 
 
 -- =========================
@@ -1345,6 +1356,307 @@ $$;
 ALTER FUNCTION public.get_security_value_native(integer)
 OWNER TO postgres;
 
+CREATE OR REPLACE FUNCTION add_buy_proposal(
+    p_security_id INTEGER,
+    p_brokerage_account_id INTEGER,
+    p_lot_amount_to_buy INTEGER
+)
+RETURNS VOID AS $$
+DECLARE
+    v_lot_size NUMERIC(12,2);
+    v_security_price NUMERIC(12,2);
+    v_total_quantity NUMERIC(12,2); -- Общее количество ценных бумаг
+    v_total_cost NUMERIC(12,2);     -- Общая стоимость в валюте (для списания)
+
+    v_operation_id INTEGER;         -- ID новой операции в истории (на всякий случай, если понадобится)
+    v_proposal_id INTEGER;          -- ID нового предложения
+
+    v_buy_type_id INTEGER := 1;                 -- Покупка
+    v_active_status_id INTEGER := 3;            -- Новое/активное предложение
+    v_employee_id INTEGER := 5;                 -- По умолчанию сотрудник 5
+BEGIN
+    -- Проверка: количество лотов должно быть строго больше нуля
+    IF p_lot_amount_to_buy <= 0 THEN
+        RAISE EXCEPTION 'Количество лотов для покупки должно быть строго больше нуля (получено: %)', p_lot_amount_to_buy;
+    END IF;
+
+    -- 1. Получаем размер лота ценной бумаги
+    SELECT "Размер лота"
+    INTO v_lot_size
+    FROM public."Список ценных бумаг"
+    WHERE "ID ценной бумаги" = p_security_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Ценная бумага с ID % не найдена', p_security_id;
+    END IF;
+
+    -- 2. Получаем текущую цену одной бумаги
+    v_security_price := get_security_value_native(p_security_id);
+
+    -- 3. Вычисляем общее количество ценных бумаг
+    v_total_quantity := v_lot_size * p_lot_amount_to_buy;
+
+    -- 4. Вычисляем общую стоимость (для списания)
+    v_total_cost := v_total_quantity * v_security_price;
+
+    -- 5. Изменяем баланс и пишем в историю через специализированную функцию
+    -- Передаём отрицательную сумму → функция сама определит тип операции = 2 (списание)
+    PERFORM change_brokerage_account_balance(
+        p_account_id := p_brokerage_account_id,
+        p_amount     := -v_total_cost,
+        p_staff_id   := v_employee_id
+    );
+
+    -- 6. Получаем следующий ID для предложения
+    v_proposal_id := nextval('"Предложение_ID предложения_seq"'::regclass);
+
+    -- 7. Создаём предложение на покупку
+    INSERT INTO public."Предложение" (
+        "Сумма",                        -- количество ценных бумаг
+        "Сумма в валюте",
+		"ID ценной бумаги",
+        "ID брокерского счёта",
+        "ID типа предложения",
+        "ID статуса предложения"
+    ) VALUES (
+        v_total_quantity,
+		v_total_cost,
+        p_security_id,
+        p_brokerage_account_id,
+        v_buy_type_id,
+        v_active_status_id
+    );
+
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION add_sell_proposal(
+    p_security_id INTEGER,
+    p_brokerage_account_id INTEGER,
+    p_lot_amount_to_sell INTEGER
+)
+RETURNS VOID AS $$
+DECLARE
+    v_lot_size NUMERIC(12,2);
+    v_total_quantity NUMERIC(12,2); -- Общее количество ценных бумаг для продажи
+	v_total_cost NUMERIC(12, 2);
+
+    v_user_id INTEGER; -- ID пользователя
+    v_deposit_account_id INTEGER; -- ID депозитарного счёта
+
+    v_current_deposit_balance NUMERIC(12,2); -- Текущее доступное количество бумаг
+
+    v_brokerage_operation_id INTEGER; -- ID вставленной записи в бр. истории
+    v_deposit_operation_id INTEGER;   -- ID вставленной записи в деп. истории (не обязателен, но оставляем)
+    v_proposal_id INTEGER;            -- ID нового предложения
+
+    v_sell_type_id INTEGER := 2;      -- Тип предложения: продажа
+    v_active_status_id INTEGER := 3;  -- Статус нового предложения
+    v_employee_id INTEGER := 5;       -- Сотрудник по умолчанию
+
+    v_deposit_operation_type_id INTEGER := 2; -- Тип операции деп. счёта: заморозка
+BEGIN
+    -- 1. Проверка: количество лотов должно быть строго больше нуля
+    IF p_lot_amount_to_sell <= 0 THEN
+        RAISE EXCEPTION 'Количество лотов для продажи должно быть строго больше нуля (получено: %)', p_lot_amount_to_sell;
+    END IF;
+
+    -- 2. Получаем размер лота ценной бумаги
+    SELECT "Размер лота"
+    INTO v_lot_size
+    FROM public."Список ценных бумаг"
+    WHERE "ID ценной бумаги" = p_security_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Ценная бумага с ID % не найдена', p_security_id;
+    END IF;
+
+    -- 3. Вычисляем общее количество ценных бумаг для продажи
+    v_total_quantity := v_lot_size * p_lot_amount_to_sell;
+	v_total_cost := v_total_quantity * get_security_value_native(p_security_id);
+
+    -- 4. Получаем ID пользователя по брокерскому счёту
+    SELECT "ID пользователя"
+    INTO v_user_id
+    FROM public."Брокерский счёт"
+    WHERE "ID брокерского счёта" = p_brokerage_account_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Брокерский счёт с ID % не найден', p_brokerage_account_id;
+    END IF;
+
+    -- 5. Получаем ID депозитарного счёта по ID пользователя
+    SELECT "ID депозитарного счёта"
+    INTO v_deposit_account_id
+    FROM public."Депозитарный счёт"
+    WHERE "ID пользователя" = v_user_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Депозитарный счёт для пользователя ID % не найден', v_user_id;
+    END IF;
+
+    -- 6. Проверяем наличие и достаточность свободного баланса ценных бумаг
+    SELECT "Сумма"
+    INTO v_current_deposit_balance
+    FROM public."Баланс депозитарного счёта"
+    WHERE "ID депозитарного счёта" = v_deposit_account_id
+      AND "ID пользователя" = v_user_id
+      AND "ID ценной бумаги" = p_security_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Запись баланса для ценной бумаги ID % на депозитарном счёте пользователя ID % не найдена',
+            p_security_id, v_user_id;
+    END IF;
+
+    IF v_current_deposit_balance < v_total_quantity THEN
+        RAISE EXCEPTION 'Недостаточно свободных ценных бумаг на депозитарном счёте. Доступно: %, требуется: %',
+            v_current_deposit_balance, v_total_quantity;
+    END IF;
+
+    -- 7. Замораживаем бумаги: уменьшаем доступное количество
+    UPDATE public."Баланс депозитарного счёта"
+    SET "Сумма" = "Сумма" - v_total_quantity
+    WHERE "ID депозитарного счёта" = v_deposit_account_id
+      AND "ID пользователя" = v_user_id
+      AND "ID ценной бумаги" = p_security_id;
+
+    -- 8. Создаём запись в истории операций брокерского счёта с суммой 0
+    INSERT INTO public."История операций бр. счёта" (
+        "Сумма операции",
+        "Время",
+        "ID брокерского счёта",
+        "ID сотрудника",
+        "ID типа операции бр. счёта"
+    ) VALUES (
+        0,
+        CURRENT_TIMESTAMP,
+        p_brokerage_account_id,
+        v_employee_id,
+        1  -- тип 1 (пополнение), т.к. сумма = 0
+    )
+    RETURNING "ID операции бр. счёта" INTO v_brokerage_operation_id;
+
+    -- 9. Создаём запись в истории операций депозитарного счёта (заморозка)
+    INSERT INTO public."История операций деп. счёта" (
+        "Сумма операции",
+        "Время",
+        "ID депозитарного счёта",
+        "ID пользователя",
+        "ID ценной бумаги",
+        "ID сотрудника",
+        "ID операции бр. счёта",
+        "ID брокерского счёта",
+        "ID типа операции деп. счёта"
+    ) VALUES (
+        v_total_quantity,
+        CURRENT_TIMESTAMP,
+        v_deposit_account_id,
+        v_user_id,
+        p_security_id,
+        v_employee_id,
+        v_brokerage_operation_id,
+        p_brokerage_account_id,
+        v_deposit_operation_type_id
+    )
+    RETURNING "ID операции деп. счёта" INTO v_deposit_operation_id;
+
+    -- 10. Создаём предложение на продажу (используем RETURNING вместо nextval)
+    INSERT INTO public."Предложение" (
+        "Сумма",                        -- количество ценных бумаг
+        "Сумма в валюте",
+		"ID ценной бумаги",
+        "ID брокерского счёта",
+        "ID типа предложения",
+        "ID статуса предложения"
+    ) VALUES (
+        v_total_quantity,
+        p_security_id,
+        p_brokerage_account_id,
+        v_sell_type_id,
+        v_active_status_id
+    )
+    RETURNING "ID предложения" INTO v_proposal_id;
+
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION process_buy_proposal(
+    p_employee_id INTEGER,
+    p_proposal_id INTEGER,
+    p_verify BOOLEAN
+)
+RETURNS VOID AS $$
+BEGIN
+    -- Здесь будет логика обработки предложения на покупку
+    -- (пока пустая — будет заполнена позже)
+    NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION process_sell_proposal(
+    p_employee_id INTEGER,
+    p_proposal_id INTEGER,
+    p_verify BOOLEAN
+)
+RETURNS VOID AS $$
+BEGIN
+    -- Здесь будет логика обработки предложения на продажу
+    -- (пока пустая — будет заполнена позже)
+    NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION process_proposal(
+    p_employee_id INTEGER,
+    p_proposal_id INTEGER,
+    p_verify BOOLEAN
+)
+RETURNS VOID AS $$
+DECLARE
+    v_current_status_id INTEGER;
+    v_proposal_type_id INTEGER;
+BEGIN
+    -- 1. Проверка существования сотрудника
+    PERFORM 1
+    FROM public."Персонал"
+    WHERE "ID сотрудника" = p_employee_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Сотрудник с ID % не найден', p_employee_id;
+    END IF;
+
+    -- 2. Получаем тип и статус предложения, блокируем строку
+    SELECT "ID типа предложения", "ID статуса предложения"
+    INTO v_proposal_type_id, v_current_status_id
+    FROM public."Предложение"
+    WHERE "ID предложения" = p_proposal_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Предложение с ID % не найдено', p_proposal_id;
+    END IF;
+
+    -- 3. Проверка, что предложение ожидает верификации (статус ID = 3)
+    IF v_current_status_id != 3 THEN
+        RAISE EXCEPTION 'Предложение с ID % уже обработано или имеет недопустимый статус (текущий статус ID: %)',
+            p_proposal_id, v_current_status_id;
+    END IF;
+
+    -- 4. В зависимости от типа предложения вызываем соответствующую функцию
+    IF v_proposal_type_id = 1 THEN
+        -- Покупка
+        PERFORM process_buy_proposal(p_employee_id, p_proposal_id, p_verify);
+    ELSIF v_proposal_type_id = 2 THEN
+        -- Продажа
+        PERFORM process_sell_proposal(p_employee_id, p_proposal_id, p_verify);
+    ELSE
+        RAISE EXCEPTION 'Неизвестный тип предложения ID % для предложения ID %',
+            v_proposal_type_id, p_proposal_id;
+    END IF;
+
+END;
+$$ LANGUAGE plpgsql;
 
 -- =========================
 -- 3) ТЕСТОВЫЕ ДАННЫЕ
@@ -1452,24 +1764,24 @@ BEGIN
     -- Для первого пользователя
     INSERT INTO "Брокерский счёт"
     ("Баланс", "ИНН", "БИК", "ID банка", "ID пользователя", "ID валюты")
-    VALUES (15000.00, '1111111111', '044525111', 1, uid1, 1)
+    VALUES (15000.00, '', '044525111', 1, uid1, 1)
     RETURNING "ID брокерского счёта" INTO broker_id1;
 
     -- Для второго пользователя
     INSERT INTO "Брокерский счёт"
     ("Баланс", "ИНН", "БИК", "ID банка", "ID пользователя", "ID валюты")
-    VALUES (50000.00, '2222222222', '044525222', 1, uid2, 1)
+    VALUES (50000.00, '', '044525222', 1, uid2, 1)
     RETURNING "ID брокерского счёта" INTO broker_id2;
 
     --------------------------------------------------------
     -- 8. ПРЕДЛОЖЕНИЯ НА ПРОДАЖУ/ПОКУПКУ
     --------------------------------------------------------
     INSERT INTO "Предложение"
-    ("Сумма", "ID ценной бумаги", "ID брокерского счёта", "ID типа предложения", "ID статуса предложения")
+    ("Сумма", "Сумма в валюте", "ID ценной бумаги", "ID брокерского счёта", "ID типа предложения", "ID статуса предложения")
     VALUES
-        (8, 1, broker_id1, 1, 1),   -- продажа от user1
-        (12, 2, broker_id2, 1, 1),  -- покупка от user2
-        (12, 3, broker_id2, 2, 1);  -- покупка от user2
+        (8, 8*get_security_value_native(1), 1, broker_id1, 1, 1),   -- продажа от user1
+        (12, 12*get_security_value_native(2), 2, broker_id2, 1, 1),  -- покупка от user2
+        (12, 12*get_security_value_native(3), 3, broker_id2, 2, 1);  -- покупка от user2
 
     RAISE NOTICE 'Тестовые данные успешно созданы!';
     RAISE NOTICE 'Пользователь 1 (user1): ID = %', uid1;
@@ -1479,7 +1791,6 @@ END $$;
 
 
 INSERT INTO public."История операций бр. счёта" (
-    "ID операции бр. счёта",
     "Сумма операции",
     "Время",
     "ID брокерского счёта",
@@ -1487,15 +1798,15 @@ INSERT INTO public."История операций бр. счёта" (
     "ID типа операции бр. счёта"
 ) VALUES
     -- Счёт 1
-    (1, 100000.00, '2025-10-15 09:30:00', 1, 1, 1),  -- Пополнение 100 000 ₽
-    (2, -15000.00, '2025-10-20 14:22:10', 1, 2, 2),  -- Списание 15 000 ₽
-    (3, 50000.00,  '2025-11-05 11:15:00', 1, 1, 1),  -- Пополнение 50 000 ₽
-    (4, -8000.50,  '2025-11-12 16:45:30', 1, 3, 2),  -- Списание 8 000.50 ₽
+    (100000.00, '2025-10-15 09:30:00', 1, 1, 1),  -- Пополнение 100 000 ₽
+    (-15000.00, '2025-10-20 14:22:10', 1, 2, 2),  -- Списание 15 000 ₽
+    (50000.00,  '2025-11-05 11:15:00', 1, 1, 1),  -- Пополнение 50 000 ₽
+    (-8000.50,  '2025-11-12 16:45:30', 1, 3, 2),  -- Списание 8 000.50 ₽
 
     -- Счёт 2
-    (5, 75000.00,  '2025-10-18 10:00:00', 2, 2, 1),  -- Пополнение
-    (6, -30000.00, '2025-11-01 13:20:00', 2, 1, 2),  -- Списание
-    (7, 200000.00, '2025-12-01 08:45:00', 2, 3, 1);  -- Пополнение
+    (75000.00,  '2025-10-18 10:00:00', 2, 2, 1),  -- Пополнение
+    (-30000.00, '2025-11-01 13:20:00', 2, 1, 2),  -- Списание
+    (200000.00, '2025-12-01 08:45:00', 2, 3, 1);  -- Пополнение
 
 
 ------------------------------------------------------------

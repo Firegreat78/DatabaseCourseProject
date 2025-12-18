@@ -459,12 +459,10 @@ async def create_offer(
 
     return {
         "id": proposal.id,
-        "amount": float(proposal.amount),
-        "security_id": proposal.security_id,
-        "proposal_type": {
-            "id": proposal_type_obj.id,
-            "type": proposal_type_obj.type
-        }
+        "Тип предложения": proposal_type_obj.type,
+        "Название бумаги": proposal.security.name,
+        "Количество": float(proposal.amount),
+        "security_id": proposal.security.id
     }
 
 
@@ -502,8 +500,6 @@ async def get_proposal_types(db: AsyncSession = Depends(get_db)):
         {"id": t.id, "type": t.type}
         for t in types
     ]
-
-
 
 
 

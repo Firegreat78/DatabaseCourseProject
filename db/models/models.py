@@ -153,6 +153,7 @@ class Proposal(Base):
 
     id = Column("ID предложения", Integer, primary_key=True, nullable=False)
     amount = Column("Сумма", Numeric(12,2), nullable=False)
+    amount_in_fiat = Column("Сумма в валюте", Numeric(12, 2), nullable=False)
     security_id = Column("ID ценной бумаги", Integer, ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
     brokerage_account_id = Column("ID брокерского счёта", Integer, ForeignKey("Брокерский счёт.ID брокерского счёта", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     proposal_type_id = Column("ID типа предложения", Integer,
@@ -168,7 +169,7 @@ class Proposal(Base):
     status = relationship("ProposalStatus", backref="proposals")
 
     def __repr__(self):
-        return f"<Proposal(id={self.id}, amount={self.amount}, security_id={self.security_id}, brokerage_account_id={self.brokerage_account_id}, proposal_type_id={self.proposal_type_id})>"
+        return f"<Proposal(id={self.id}, amount={self.amount}, amount_in_fiat={self.amount_in_fiat} security_id={self.security_id}, brokerage_account_id={self.brokerage_account_id}, proposal_type_id={self.proposal_type_id})>"
 
 
 class BrokerageAccount(Base):
@@ -202,7 +203,7 @@ class BrokerageAccount(Base):
 
 
     def __repr__(self):
-        return f"<BrokerageAccount(id={self.id}, balance={self.balance}, inn='{self.inn}', bik='{self.bik}', bank_id={self.bank_id}, currency_id={self.currency_id})>"
+        return f"<BrokerageAccount(id={self.id}, balance={self.balance}, bik='{self.bik}', bank_id={self.bank_id}, currency_id={self.currency_id})>"
 
 
 class DepositoryAccount(Base):
