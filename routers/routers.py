@@ -56,7 +56,7 @@ async def get_user_brokerage_accounts(
     db: AsyncSession = Depends(get_db)
 ):
     if current_user["role"] != "user":
-        raise HTTPException(status_code=403, detail="Доступ запрещён")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
     user_id = current_user["id"]
 
@@ -105,18 +105,140 @@ async def get_portfolio_securities(
     return securities_list
 
 
-@brokerage_accounts_router.get("/offers")
+class OfferResponse(BaseModel):
+    id: int
+    type: str
+    security_name: str
+    quantity: float
+
+@brokerage_accounts_router.get(
+    "/offers",
+    response_model=list[OfferResponse]
+)
 async def get_user_offers(
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     user_id = current_user["id"]
 
-    query = text("SELECT * FROM get_user_offers(:user_id)")
-    result = await db.execute(query, {"user_id": user_id})
-    rows = result.fetchall()
+    result = await db.execute(
+        text("""
+            SELECT
+                p."ID предложения"      AS id,
+                t."Тип"                 AS type,
+                b."Наименование"        AS security_name,
+                p."Сумма"               AS quantity
+            FROM "Предложение" p
+            JOIN "Тип предложения" t ON p."ID типа предложения" = t."ID типа предложения"
+            JOIN "Список ценных бумаг" b ON p."ID ценной бумаги" = b."ID ценной бумаги"
+            JOIN "Брокерский счёт" a ON p."ID брокерского счёта" = a."ID брокерского счёта"
+            WHERE a."ID пользователя" = :user_id
+            ORDER BY p."ID предложения" DESC
+        """),
+        {"user_id": user_id}
+    )
 
-    return [dict(row._mapping) for row in rows]
+    return [
+        OfferResponse(**row._mapping)
+        for row in result.fetchall()
+    ]
+
+
+class OfferCreate(BaseModel):
+    account_id: int
+    security_id: int
+    quantity: Decimal = Field(..., gt=0, decimal_places=2)
+    proposal_type_id: int  # 1 = купить, 2 = продать
+
+
+@brokerage_accounts_router.post(
+    "/offers",
+    response_model=OfferResponse,
+    status_code=status.HTTP_201_CREATED
+)
+async def create_offer(
+    data: OfferCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+
+    # 1. Проверка счёта
+    account = await db.scalar(
+        select(BrokerageAccount)
+        .where(
+            BrokerageAccount.id == data.account_id,
+            BrokerageAccount.user_id == user_id
+        )
+    )
+    if not account:
+        raise HTTPException(404, "Брокерский счёт не найден")
+
+    # 2. Проверка бумаги
+    security = await db.scalar(
+        select(Security).where(Security.id == data.security_id)
+    )
+    if not security:
+        raise HTTPException(404, "Ценная бумага не найдена")
+
+    # 3. Проверка валюты
+    if account.currency_id != security.currency_id:
+        raise HTTPException(
+            400,
+            "Валюта брокерского счёта не совпадает с валютой бумаги"
+        )
+
+    # 4. Проверка типа предложения
+    proposal_type = await db.scalar(
+        select(ProposalType)
+        .where(ProposalType.id == data.proposal_type_id)
+    )
+    if not proposal_type:
+        raise HTTPException(400, "Некорректный тип предложения")
+
+    # 5. Создание предложения (ВНЕ if)
+    if data.proposal_type_id == 1:
+        sql = text("SELECT add_buy_proposal(:security_id, :account_id, :lot_amount)")
+    elif data.proposal_type_id == 2:
+        sql = text("SELECT add_sell_proposal(:security_id, :account_id, :lot_amount)")
+    else:
+        raise HTTPException(400, "Некорректный тип предложения")
+
+    await db.execute(sql, {
+        "security_id": data.security_id,
+        "account_id": data.account_id,
+        "lot_amount": data.quantity
+    })
+
+    await db.commit()
+
+    # 6. Возвращаем созданное предложение в формате OfferResponse
+    result = await db.execute(
+        text("""
+            SELECT
+                p."ID предложения"      AS id,
+                t."Тип"                 AS type,
+                b."Наименование"        AS security_name,
+                p."Сумма"               AS quantity
+            FROM "Предложение" p
+            JOIN "Тип предложения" t ON p."ID типа предложения" = t."ID типа предложения"
+            JOIN "Список ценных бумаг" b ON p."ID ценной бумаги" = b."ID ценной бумаги"
+            WHERE p."ID брокерского счёта" = :account_id
+              AND p."ID ценной бумаги" = :security_id
+            ORDER BY p."ID предложения" DESC
+            LIMIT 1
+        """),
+        {
+            "account_id": data.account_id,
+            "security_id": data.security_id
+        }
+    )
+
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(500, "Предложение создано, но не найдено")
+
+    return OfferResponse(**row._mapping)
 
 
 @brokerage_accounts_router.get("/exchange/stocks")
@@ -151,7 +273,7 @@ async def get_brokerage_account_operations(
     )
 
     if check.first() is None:
-        raise HTTPException(status_code=404, detail="Счёт не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
 
     # Основной запрос
     query = text("""
@@ -191,7 +313,7 @@ async def get_brokerage_account(
 
     row = result.first()
     if row is None:
-        raise HTTPException(status_code=404, detail="Счёт не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
 
     return {
         "id": row.id,
@@ -221,56 +343,6 @@ class BalanceChangeRequestCreate(BaseModel):
                 "amount": "15000.00"
             }
         }
-    }
-
-
-@brokerage_accounts_router.post("/{account_id}/balance-change-requests")
-async def create_balance_change_request(
-    account_id: int,
-    data: BalanceChangeRequestCreate,
-    db: AsyncSession = Depends(get_db),
-    user = Depends(get_current_user),
-):
-    # 1. Находим счёт и проверяем, что он принадлежит пользователю
-    account = await db.scalar(
-        select(BrokerageAccount)
-        .where(
-            BrokerageAccount.id == account_id,
-            BrokerageAccount.user_id == user["id"]
-        )
-    )
-
-    if not account:
-        raise HTTPException(status_code=404, detail="Счёт не найден или не принадлежит вам")
-
-    # 2. Проверяем сумму для вывода (если amount < 0)
-    if data.amount < 0:
-        if account.balance + data.amount < 0:  # balance + (-amount) < 0
-            raise HTTPException(status_code=400, detail="Недостаточно средств на счёте")
-
-    # 3. Изменяем баланс счёта сразу (без транзакции запроса)
-    new_balance = account.balance + data.amount
-    await db.execute(
-        update(BrokerageAccount)
-        .where(BrokerageAccount.id == account_id)
-        .values(balance=new_balance)
-    )
-
-    # 4. Создаём запись в таблице запросов (для истории и аудита)
-    request = BrockerageBalanceChangeRequest(
-        brokerage_account_id=account_id,
-        status_id=1,  # 1 = На рассмотрении (или "Успешно выполнен", если сразу применяем)
-        amount=data.amount,
-    )
-
-    db.add(request)
-    await db.commit()
-    await db.refresh(account)  # обновляем объект счёта
-
-    return {
-        "status": "ok",
-        "new_balance": float(account.balance),  # возвращаем новый баланс
-        "message": "Баланс успешно изменён"
     }
 
 
@@ -305,32 +377,14 @@ async def get_verification_status(
         )
 
 
-@brokerage_accounts_router.patch("/brokerage-accounts/{account_id}/balance-change-requests/{request_id}")
-async def cancel_request(
-    account_id: int,
-    request_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
-):
-    request = await db.get(BrockerageBalanceChangeRequest, request_id)
-    if not request or request.brokerage_account_id != account_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Запрос не найден")
-
-    request_cancelled = 2
-    request.status_id = request_cancelled
-
-    await db.commit()
-    return {"success": True}
-
-
 @brokerage_accounts_router.post("/brokerage-accounts/{account_id}/balance-change-requests")
 async def create_balance_change_request(
     account_id: int,
-    data: BalanceChangeRequestCreate,  # ожидает { "amount": float }
+    data: BalanceChangeRequestCreate,
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    # 1. Находим счёт и проверяем принадлежность пользователю
+    # 1. Находим счёт и проверяем принадлежность
     account = await db.scalar(
         select(BrokerageAccount)
         .where(
@@ -338,27 +392,27 @@ async def create_balance_change_request(
             BrokerageAccount.user_id == current_user["id"]
         )
     )
-
     if not account:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден или не принадлежит вам")
 
-    # 2. Проверка баланса при выводе (amount < 0)
+    # 2. Предварительная проверка на недостаток средств (на случай, если кто-то обошёл фронт)
     if data.amount < 0 and account.balance + data.amount < 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недостаточно средств на счёте")
 
-    # 3. Создаём запись в таблице запросов
-    request = BrockerageBalanceChangeRequest(
-        brokerage_account_id=account_id,
-        status_id=1,  # "На рассмотрении"
-        amount=data.amount,
+    # 3. Выполняем изменение баланса и запись в историю одной атомарной функцией в БД
+    query = text(
+        "SELECT change_brokerage_account_balance(:account_id, :amount, :staff_id);"
     )
+    try:
+        await db.execute(query, {"account_id": account_id, "amount": data.amount, "staff_id": 5})
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    db.add(request)
-    await db.commit()
-    await db.refresh(request)
-
+    await db.refresh(account)
     return {
         "status": "ok",
-        "request_id": request.id,  # возвращаем ID нового запроса
-        "message": "Запрос на изменение баланса создан"
+        "message": "Баланс успешно изменён",
+        "new_balance": float(account.balance)
     }

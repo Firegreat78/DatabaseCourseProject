@@ -1,7 +1,8 @@
 # db/models/models.py
 from __future__ import annotations
 
-from sqlalchemy import String, Integer, Numeric, Boolean, Date, ForeignKey, Column, ForeignKeyConstraint, TIMESTAMP, UniqueConstraint, DateTime, func
+from sqlalchemy import String, Integer, Numeric, Boolean, Date, ForeignKey, Column, ForeignKeyConstraint, TIMESTAMP, \
+    UniqueConstraint, DateTime, func, nullsfirst
 from sqlalchemy.orm import DeclarativeBase, registry, Mapped, relationship, mapped_column
 
 from decimal import Decimal
@@ -147,29 +148,104 @@ class Staff(Base):
     def __repr__(self):
         return f"<Staff(id={self.id}, contract_number='{self.contract_number}', login='{self.login}', rights_level='{self.rights_level}', employment_status_id={self.employment_status_id})>"
 
-
 class Proposal(Base):
     __tablename__ = "Предложение"
 
-    id = Column("ID предложения", Integer, primary_key=True, nullable=False)
-    amount = Column("Сумма", Numeric(12,2), nullable=False)
-    security_id = Column("ID ценной бумаги", Integer, ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
-    brokerage_account_id = Column("ID брокерского счёта", Integer, ForeignKey("Брокерский счёт.ID брокерского счёта", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
-    proposal_type_id = Column("ID типа предложения", Integer,
-                              ForeignKey("Тип предложения.ID типа предложения", ondelete="RESTRICT",
-                                         onupdate="RESTRICT"), nullable=False)
-    status_id = Column("ID статуса предложения", Integer,
-                       ForeignKey("Статус предложения.ID статуса", ondelete="RESTRICT", onupdate="RESTRICT"),
-                       nullable=False, default=1)
+    # 🔑 COMPOSITE PRIMARY KEY
+    id = Column(
+        "ID предложения",
+        Integer,
+        primary_key=True,
+        nullable=False,
+    )
+
+    brokerage_account_id = Column(
+        "ID брокерского счёта",
+        Integer,
+        ForeignKey(
+            "Брокерский счёт.ID брокерского счёта",
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+        primary_key=True,
+        nullable=False,
+    )
+
+    # -------- other columns --------
+
+    amount = Column("Сумма", Numeric(12, 2), nullable=False)
+    amount_in_fiat = Column("Сумма в валюте", Numeric(12, 2), nullable=False)
+
+    brokerage_account_history_id = Column(
+        "ID операции бр. счёта",
+        Integer,
+        ForeignKey(
+            "История операций бр. счёта.ID операции бр. счёта",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+
+    security_id = Column(
+        "ID ценной бумаги",
+        Integer,
+        ForeignKey(
+            "Список ценных бумаг.ID ценной бумаги",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+
+    proposal_type_id = Column(
+        "ID типа предложения",
+        Integer,
+        ForeignKey(
+            "Тип предложения.ID типа предложения",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+
+    status_id = Column(
+        "ID статуса предложения",
+        Integer,
+        ForeignKey(
+            "Статус предложения.ID статуса",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+        default=1,
+    )
+
+    # -------- relationships --------
+
+    brokerage_account = relationship(
+        "BrokerageAccount",
+        backref="proposals",
+    )
+
+    # ✅ FIX: Add primaryjoin to explicitly define the join condition
+    brokerage_account_operation = relationship(
+        "BrokerageAccountHistory",
+        backref="proposals",
+        foreign_keys=[brokerage_account_history_id],
+        primaryjoin="Proposal.brokerage_account_history_id == BrokerageAccountHistory.id"  # <-- Explicit join condition
+    )
 
     security = relationship("Security", backref="proposals")
-    brokerage_account = relationship("BrokerageAccount", backref="proposals")
     proposal_type = relationship("ProposalType", backref="proposals")
     status = relationship("ProposalStatus", backref="proposals")
 
     def __repr__(self):
-        return f"<Proposal(id={self.id}, amount={self.amount}, security_id={self.security_id}, brokerage_account_id={self.brokerage_account_id}, proposal_type_id={self.proposal_type_id})>"
-
+        return (
+            f"<Proposal(id={self.id}, "
+            f"brokerage_account_id={self.brokerage_account_id}, "
+            f"amount={self.amount})>"
+        )
 
 class BrokerageAccount(Base):
     __tablename__ = "Брокерский счёт"
@@ -202,7 +278,7 @@ class BrokerageAccount(Base):
 
 
     def __repr__(self):
-        return f"<BrokerageAccount(id={self.id}, balance={self.balance}, inn='{self.inn}', bik='{self.bik}', bank_id={self.bank_id}, currency_id={self.currency_id})>"
+        return f"<BrokerageAccount(id={self.id}, balance={self.balance}, bik='{self.bik}', bank_id={self.bank_id}, currency_id={self.currency_id})>"
 
 
 class DepositoryAccount(Base):
@@ -260,49 +336,85 @@ class Passport(Base):
 class BrokerageAccountHistory(Base):
     __tablename__ = "История операций бр. счёта"
 
-    id = Column("ID операции бр. счёта", Integer, primary_key=True, nullable=False)
-    amount = Column("Сумма операции", Numeric(12, 2), nullable=False)
-    time = Column("Время", TIMESTAMP(6), nullable=False)
-    brokerage_account_id = Column("ID брокерского счёта", Integer, nullable=False)
+    id = Column(
+        "ID операции бр. счёта",
+        Integer,
+        primary_key=True,
+        nullable=False,
+    )
+
+    brokerage_account_id = Column(
+        "ID брокерского счёта",
+        Integer,
+        ForeignKey(
+            "Брокерский счёт.ID брокерского счёта",
+            ondelete="CASCADE",
+            onupdate="CASCADE",
+        ),
+        primary_key=True,
+        nullable=False,
+    )
+
+    amount = Column(
+        "Сумма операции",
+        Numeric(12, 2),
+        nullable=False,
+    )
+
+    time = Column(
+        "Время",
+        TIMESTAMP(6),
+        nullable=False,
+    )
+
     staff_id = Column(
         "ID сотрудника",
         Integer,
-        ForeignKey("Персонал.ID сотрудника", ondelete="RESTRICT", onupdate="RESTRICT"),
+        ForeignKey(
+            "Персонал.ID сотрудника",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
         nullable=False,
     )
+
     operation_type_id = Column(
         "ID типа операции бр. счёта",
         Integer,
-        ForeignKey("Тип операции брокерского счёта.ID типа операции бр. счёта",
-                   ondelete="RESTRICT", onupdate="RESTRICT"),
+        ForeignKey(
+            '"Тип операции брокерского счёта".ID типа операции бр. счёта',
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
         nullable=False,
     )
 
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["ID брокерского счёта"],
-            ["Брокерский счёт.ID брокерского счёта"],
-            ondelete="CASCADE",
-            onupdate="CASCADE",
-            name="Relationship23",
-        ),
+    # relationships
+    brokerage_account = relationship(
+        "BrokerageAccount",
+        backref="history",
     )
 
-    brokerage_account = relationship("BrokerageAccount", backref="history")
-    staff = relationship("Staff", backref="brokerage_operations")
+    staff = relationship(
+        "Staff",
+        backref="brokerage_operations",
+    )
+
     operation_type = relationship(
         "BrokerageAccountOperationType",
         backref="operations",
-        primaryjoin=(
-                operation_type_id ==
-                BrokerageAccountOperationType.__table__.c["ID типа операции бр. счёта"]
-        ),
         foreign_keys=[operation_type_id],
+        primaryjoin="BrokerageAccountHistory.operation_type_id == BrokerageAccountOperationType.id"
     )
 
     def __repr__(self):
-        return f"<BrokerageAccountHistory(id={self.id}, amount={self.amount}, brokerage_account_id={self.brokerage_account_id}, time={self.time})>"
-
+        return (
+            f"<BrokerageAccountHistory("
+            f"id={self.id}, "
+            f"brokerage_account_id={self.brokerage_account_id}, "
+            f"amount={self.amount}, "
+            f"time={self.time})>"
+        )
 
 class DepositoryAccountHistory(Base):
     __tablename__ = "История операций деп. счёта"
