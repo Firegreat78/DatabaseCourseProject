@@ -107,9 +107,10 @@ async def get_portfolio_securities(
 
 class OfferResponse(BaseModel):
     id: int
-    type: str
+    offer_type: str
     security_name: str
     quantity: float
+    proposal_status: int
 
 @brokerage_accounts_router.get(
     "/offers",
@@ -122,19 +123,7 @@ async def get_user_offers(
     user_id = current_user["id"]
 
     result = await db.execute(
-        text("""
-            SELECT
-                p."ID предложения"      AS id,
-                t."Тип"                 AS type,
-                b."Наименование"        AS security_name,
-                p."Сумма"               AS quantity
-            FROM "Предложение" p
-            JOIN "Тип предложения" t ON p."ID типа предложения" = t."ID типа предложения"
-            JOIN "Список ценных бумаг" b ON p."ID ценной бумаги" = b."ID ценной бумаги"
-            JOIN "Брокерский счёт" a ON p."ID брокерского счёта" = a."ID брокерского счёта"
-            WHERE a."ID пользователя" = :user_id
-            ORDER BY p."ID предложения" DESC
-        """),
+        text("SELECT * from get_user_offers(:user_id)"),
         {"user_id": user_id}
     )
 
@@ -184,7 +173,7 @@ async def create_offer(
     # 3. Проверка валюты
     if account.currency_id != security.currency_id:
         raise HTTPException(
-            400,
+            status.HTTP_400_BAD_REQUEST,
             "Валюта брокерского счёта не совпадает с валютой бумаги"
         )
 
@@ -194,7 +183,7 @@ async def create_offer(
         .where(ProposalType.id == data.proposal_type_id)
     )
     if not proposal_type:
-        raise HTTPException(400, "Некорректный тип предложения")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Некорректный тип предложения")
 
     # 5. Создание предложения (ВНЕ if)
     if data.proposal_type_id == 1:
@@ -214,29 +203,12 @@ async def create_offer(
 
     # 6. Возвращаем созданное предложение в формате OfferResponse
     result = await db.execute(
-        text("""
-            SELECT
-                p."ID предложения"      AS id,
-                t."Тип"                 AS type,
-                b."Наименование"        AS security_name,
-                p."Сумма"               AS quantity
-            FROM "Предложение" p
-            JOIN "Тип предложения" t ON p."ID типа предложения" = t."ID типа предложения"
-            JOIN "Список ценных бумаг" b ON p."ID ценной бумаги" = b."ID ценной бумаги"
-            WHERE p."ID брокерского счёта" = :account_id
-              AND p."ID ценной бумаги" = :security_id
-            ORDER BY p."ID предложения" DESC
-            LIMIT 1
-        """),
-        {
-            "account_id": data.account_id,
-            "security_id": data.security_id
-        }
+        text("SELECT * from get_user_offers(:user_id) LIMIT 1"),{"user_id": user_id}
     )
 
     row = result.fetchone()
     if not row:
-        raise HTTPException(500, "Предложение создано, но не найдено")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Предложение создано, но не найдено")
 
     return OfferResponse(**row._mapping)
 
