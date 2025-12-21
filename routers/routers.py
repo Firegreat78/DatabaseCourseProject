@@ -317,8 +317,14 @@ class BalanceChangeRequestCreate(BaseModel):
         }
     }
 
+class VerificationStatusResponse(BaseModel):
+    is_verified: bool
 
-@brokerage_accounts_router.get("/user_verification_status/{user_id}")
+
+@brokerage_accounts_router.get(
+    "/user_verification_status/{user_id}",
+    response_model=VerificationStatusResponse
+)
 async def get_verification_status(
     user_id: int,
     current_user = Depends(get_current_user),
@@ -339,13 +345,14 @@ async def get_verification_status(
         result = await db.execute(query, {"user_id": user_id})
         is_verified_raw = result.scalar()
 
-        is_verified = bool(is_verified_raw)
+        if is_verified_raw is None:
+            raise ValueError("Функция вернула NULL")
 
-        return {"is_verified": is_verified}
+        return VerificationStatusResponse(is_verified=bool(is_verified_raw))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка при проверке статуса верификации: {e}"
+            detail=f"Ошибка при проверке статуса верификации: {str(e)}"
         )
 
 
