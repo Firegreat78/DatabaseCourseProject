@@ -388,11 +388,8 @@ ALTER TABLE "Банк" ADD CONSTRAINT "Unique_Identifier8" PRIMARY KEY ("ID ба
 CREATE TABLE "История цены"
 (
   "ID зап. ист. цены" Serial NOT NULL,
-  "Время" Date NOT NULL,
-  "Цена открытия" Numeric(12,2) NOT NULL,
-  "Цена закрытия" Numeric(12,2) NOT NULL,
-  "Цена минимальная" Numeric(12,2) NOT NULL,
-  "Цена максимальная" Numeric(12,2) NOT NULL,
+  "Дата" Date NOT NULL,
+  "Цена" Numeric(12,2) NOT NULL,
   "ID ценной бумаги" Integer NOT NULL
 )
 WITH (autovacuum_enabled=true);
@@ -401,11 +398,11 @@ ALTER TABLE "История цены" ADD CONSTRAINT "Unique_Identifier15" PRIMA
 
 CREATE TABLE currency_rate (
     id SERIAL PRIMARY KEY,
-    base_currency_id INT NOT NULL,   -- Базовая валюта (например, RUB = 1)
-    target_currency_id INT NOT NULL, -- Целевая валюта (например, USD = 2)
-    rate NUMERIC(20, 8) NOT NULL,                            -- Курс с высокой точностью (8 знаков после запятой хватит для любых валют)
-    rate_date DATE NOT NULL DEFAULT CURRENT_DATE,            -- Дата курса
-    rate_time TIMESTAMPTZ(6) DEFAULT CURRENT_TIMESTAMP,         -- Опционально: точное время (если курсы обновляются чаще раза в день)
+    base_currency_id INT NOT NULL,
+    target_currency_id INT NOT NULL,
+    rate NUMERIC(20, 8) NOT NULL,
+    rate_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    rate_time TIMESTAMPTZ(6) DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (base_currency_id, target_currency_id, rate_date) -- Один курс на пару в день
 );
@@ -660,42 +657,43 @@ VALUES
 ('Сбербанк', 5, 'RU0009029540', TRUE, 1),
 ('Биткоин', 1, 'BTC', FALSE, 2);
 
-INSERT INTO "История цены"
-("Время", "Цена открытия", "Цена закрытия", "Цена минимальная", "Цена максимальная", "ID ценной бумаги")
+INSERT INTO "История цены" ("Дата", "Цена", "ID ценной бумаги")
 VALUES
 -- Ценная бумага 1 (например, Сбер)
-('2025-12-04 00:00:00', 285.50, 288.20, 284.10, 290.00, 1),
-('2025-12-05 00:00:00', 288.20, 292.50, 287.00, 294.30, 1),
-('2025-12-06 00:00:00', 292.50, 290.80, 289.50, 293.70, 1),
-('2025-12-07 00:00:00', 290.80, 295.10, 290.00, 296.50, 1),
-('2025-12-08 00:00:00', 295.10, 298.40, 294.20, 299.80, 1),
-('2025-12-09 00:00:00', 298.40, 302.70, 297.50, 303.90, 1),
-('2025-12-10 00:00:00', 302.70, 300.50, 299.10, 303.20, 1),
-('2025-12-11 00:00:00', 300.50, 305.80, 300.00, 307.00, 1),
-('2025-12-12 00:00:00', 305.80, 310.20, 304.50, 311.50, 1),
-('2025-12-13 00:00:00', 310.20, 315.60, 309.80, 317.00, 1),
+('2025-12-04', 288.20, 1),  -- Цена закрытия
+('2025-12-05', 292.50, 1),
+('2025-12-06', 290.80, 1),
+('2025-12-07', 295.10, 1),
+('2025-12-08', 298.40, 1),
+('2025-12-09', 302.70, 1),
+('2025-12-10', 300.50, 1),
+('2025-12-11', 305.80, 1),
+('2025-12-12', 310.20, 1),
+('2025-12-13', 315.60, 1),
+
 -- Ценная бумага 2 (например, Газпром)
-('2025-12-04 00:00:00', 145.30, 147.80, 144.50, 149.00, 2),
-('2025-12-05 00:00:00', 147.80, 150.20, 146.90, 151.50, 2),
-('2025-12-06 00:00:00', 150.20, 148.90, 148.00, 151.10, 2),
-('2025-12-07 00:00:00', 148.90, 152.40, 148.50, 153.70, 2),
-('2025-12-08 00:00:00', 152.40, 155.10, 151.80, 156.30, 2),
-('2025-12-09 00:00:00', 155.10, 158.60, 154.70, 159.80, 2),
-('2025-12-10 00:00:00', 158.60, 156.30, 155.50, 159.00, 2),
-('2025-12-11 00:00:00', 156.30, 160.80, 156.00, 162.10, 2),
-('2025-12-12 00:00:00', 160.80, 164.50, 160.20, 165.90, 2),
-('2025-12-13 00:00:00', 164.50, 168.20, 163.80, 169.50, 2),
+('2025-12-04', 147.80, 2),
+('2025-12-05', 150.20, 2),
+('2025-12-06', 148.90, 2),
+('2025-12-07', 152.40, 2),
+('2025-12-08', 155.10, 2),
+('2025-12-09', 158.60, 2),
+('2025-12-10', 156.30, 2),
+('2025-12-11', 160.80, 2),
+('2025-12-12', 164.50, 2),
+('2025-12-13', 168.20, 2),
+
 -- Ценная бумага 3 (Биткоин)
-('2025-12-04 00:00:00', 92000.00, 93500.00, 91800.00, 94000.00, 3),
-('2025-12-05 00:00:00', 93500.00, 92800.00, 92200.00, 94200.00, 3),
-('2025-12-06 00:00:00', 92800.00, 91000.00, 90500.00, 93200.00, 3),
-('2025-12-07 00:00:00', 91000.00, 92500.00, 90800.00, 93500.00, 3),
-('2025-12-08 00:00:00', 92500.00, 94000.00, 92200.00, 94800.00, 3),
-('2025-12-09 00:00:00', 94000.00, 93500.00, 93000.00, 94500.00, 3),
-('2025-12-10 00:00:00', 93500.00, 92000.00, 91500.00, 93800.00, 3),
-('2025-12-11 00:00:00', 92000.00, 90500.00, 90000.00, 92500.00, 3),
-('2025-12-12 00:00:00', 90500.00, 89000.00, 88500.00, 91000.00, 3),
-('2025-12-13 00:00:00', 89000.00, 87500.00, 87000.00, 89500.00, 3);
+('2025-12-04', 93500.00, 3),
+('2025-12-05', 92800.00, 3),
+('2025-12-06', 91000.00, 3),
+('2025-12-07', 92500.00, 3),
+('2025-12-08', 94000.00, 3),
+('2025-12-09', 93500.00, 3),
+('2025-12-10', 92000.00, 3),
+('2025-12-11', 90500.00, 3),
+('2025-12-12', 89000.00, 3),
+('2025-12-13', 87500.00, 3);
 
 -- 7. Типы операций депозитарного счёта
 INSERT INTO "Тип операции депозитарного счёта"("Тип")
@@ -884,11 +882,11 @@ AS $$
 WITH last_prices AS (
     SELECT
         ph."ID ценной бумаги",
-        ph."Цена закрытия",
-        ph."Время",
+        ph."Цена",
+        ph."Дата",
         ROW_NUMBER() OVER (
             PARTITION BY ph."ID ценной бумаги"
-            ORDER BY ph."Время" DESC
+            ORDER BY ph."Дата" DESC
         ) AS rn
     FROM "История цены" ph
 ),
@@ -896,8 +894,8 @@ prices AS (
     SELECT
         s."ID ценной бумаги" AS id,
         s."Наименование" AS ticker,
-        lp."Цена закрытия" AS last_price,
-        prev."Цена закрытия" AS prev_price,
+        lp."Цена" AS last_price,
+        prev."Цена" AS prev_price,
         c."Символ" AS currency
     FROM "Список ценных бумаг" s
     JOIN last_prices lp
@@ -1050,52 +1048,61 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 
--- 2.3 calc_depo_value: сумма по всем бумагам на депозитарном счёте, в валюте p_currency_id
 CREATE OR REPLACE FUNCTION calc_depo_value(
     p_depo_id INT,
     p_user_id INT,
     p_currency_id INT
 ) RETURNS NUMERIC AS $$
 DECLARE
-    result NUMERIC := 0;
+    total_value NUMERIC := 0;
+    paper_value NUMERIC;
+    paper_currency_id INT;
+    exchange_rate NUMERIC;
+    latest_date DATE;
+    paper_price NUMERIC;
 BEGIN
-    SELECT SUM(
-        b."Сумма" *
-        ( -- берём последнюю цену в валюте бумаги
-            COALESCE(c."Цена закрытия",0)
-        )
-    ) INTO result
-    FROM "Баланс депозитарного счёта" b
-    JOIN "Список ценных бумаг" sb ON sb."ID ценной бумаги" = b."ID ценной бумаги"
-    JOIN LATERAL (
-         SELECT "Цена закрытия"
-         FROM "История цены"
-         WHERE "ID ценной бумаги" = b."ID ценной бумаги"
-         ORDER BY "Время" DESC LIMIT 1
-    ) c ON TRUE
-    WHERE b."ID депозитарного счёта" = p_depo_id
-      AND b."ID пользователя" = p_user_id;
+    -- Перебираем все ценные бумаги на депозитарном счете
+    FOR paper_currency_id, paper_price, paper_value IN
+        SELECT
+            s."ID валюты",
+            COALESCE(ph."Цена", 0) as price,
+            b."Сумма" as quantity
+        FROM "Баланс депозитарного счёта" b
+        JOIN "Список ценных бумаг" s
+            ON s."ID ценной бумаги" = b."ID ценной бумаги"
+        LEFT JOIN LATERAL (
+            SELECT ph."Цена"
+            FROM "История цены" ph
+            WHERE ph."ID ценной бумаги" = b."ID ценной бумаги"
+            ORDER BY ph."Дата" DESC
+            LIMIT 1
+        ) ph ON TRUE
+        WHERE b."ID депозитарного счёта" = p_depo_id
+          AND b."ID пользователя" = p_user_id
+    LOOP
+        -- Если цена не найдена, пропускаем
+        IF paper_price IS NULL OR paper_price = 0 THEN
+            CONTINUE;
+        END IF;
 
-    -- Если result NULL -> 0
-    result := COALESCE(result,0);
+        -- Вычисляем стоимость бумаги в её собственной валюте
+        paper_value := paper_value * paper_price;
 
-    -- Цена в единицах валюты бумаги * количество лотов/шт. Переведём в целевую валюту:
-    -- У валюты бумаги берем ID: sb."ID валюты"
-    SELECT SUM(
-        b."Сумма" * c."Цена закрытия" * get_currency_rate(sb."ID валюты") / get_currency_rate(p_currency_id)
-    ) INTO result
-    FROM "Баланс депозитарного счёта" b
-    JOIN "Список ценных бумаг" sb ON sb."ID ценной бумаги" = b."ID ценной бумаги"
-    JOIN LATERAL (
-         SELECT "Цена закрытия"
-         FROM "История цены"
-         WHERE "ID ценной бумаги" = b."ID ценной бумаги"
-         ORDER BY "Время" DESC LIMIT 1
-    ) c ON TRUE
-    WHERE b."ID депозитарного счёта" = p_depo_id
-      AND b."ID пользователя" = p_user_id;
+        -- Если валюта бумаги совпадает с целевой валютой
+        IF paper_currency_id = p_currency_id THEN
+            total_value := total_value + paper_value;
+        ELSE
+            -- Конвертируем в целевую валюту
+            -- Предполагаем, что функция get_currency_rate(from_currency_id, to_currency_id) существует
+            exchange_rate := get_currency_rate(paper_currency_id, p_currency_id);
 
-    RETURN COALESCE(result,0);
+            IF exchange_rate IS NOT NULL AND exchange_rate > 0 THEN
+                total_value := total_value + (paper_value / exchange_rate);
+            END IF;
+        END IF;
+    END LOOP;
+
+    RETURN COALESCE(total_value, 0);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -1132,7 +1139,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 
--- 2.5 calc_offer_value: (если нет цены — 0)
 CREATE OR REPLACE FUNCTION calc_offer_value(
     p_offer_id INT
 ) RETURNS NUMERIC AS $$
@@ -1140,9 +1146,9 @@ DECLARE
     paper_id INT;
     qty NUMERIC := 0;
     price NUMERIC := 0;
+    latest_date DATE;
 BEGIN
-    -- Больше нет "ID пользователя" — ищем только по ID предложения
-    -- "Сумма" в таблице Предложение — это количество (лот/количество бумаг)
+    -- Получаем ID ценной бумаги и количество из предложения
     SELECT "ID ценной бумаги", "Сумма"
     INTO paper_id, qty
     FROM "Предложение"
@@ -1153,21 +1159,31 @@ BEGIN
         RETURN 0;
     END IF;
 
-    -- Берём последнюю цену закрытия
-    SELECT "Цена закрытия"
+    -- Находим последнюю дату с данными для этой бумаги
+    SELECT MAX("Дата")
+    INTO latest_date
+    FROM "История цены"
+    WHERE "ID ценной бумаги" = paper_id;
+
+    -- Если нет данных по цене — возвращаем 0
+    IF latest_date IS NULL THEN
+        RETURN 0;
+    END IF;
+
+    -- Берём последнюю цену
+    SELECT "Цена"
     INTO price
     FROM "История цены"
     WHERE "ID ценной бумаги" = paper_id
-    ORDER BY "Время" DESC
+      AND "Дата" = latest_date
     LIMIT 1;
 
-    -- Если цены нет — возвращаем 0
+    -- Если цены нет — возвращаем 0, иначе вычисляем стоимость
     RETURN COALESCE(qty, 0) * COALESCE(price, 0);
 END;
 $$ LANGUAGE plpgsql;
 
 
--- 2.6 calc_depo_growth: разница текущей стоимости и стоимости N времени назад (p_interval Postgre interval text '7 days')
 CREATE OR REPLACE FUNCTION calc_depo_growth(
     p_depo_id INT,
     p_user_id INT,
@@ -1176,24 +1192,31 @@ CREATE OR REPLACE FUNCTION calc_depo_growth(
 DECLARE
     current_value NUMERIC := 0;
     past_value NUMERIC := 0;
+    target_date DATE;
 BEGIN
-    current_value := calc_depo_value(p_depo_id, p_user_id, 1); -- результат в RUB (1 = RUB)
+    -- 1. Текущая стоимость депозита в RUB
+    current_value := calc_depo_value(p_depo_id, p_user_id, 1); -- 1 = RUB
+
+    -- 2. Определяем дату в прошлом
+    target_date := (CURRENT_DATE - p_interval::interval)::DATE;
+
+    -- 3. Стоимость депозита на целевую дату в прошлом
     SELECT
-        SUM(b."Сумма" * c."Цена закрытия")
+        SUM(b."Сумма" * COALESCE(ph."Цена", 0))
     INTO past_value
     FROM "Баланс депозитарного счёта" b
-    JOIN LATERAL (
-        SELECT "Цена закрытия"
-        FROM "История цены"
-        WHERE "ID ценной бумаги" = b."ID ценной бумаги"
-          AND "Время" <= NOW() - p_interval::interval
-        ORDER BY "Время" DESC
+    LEFT JOIN LATERAL (
+        SELECT ph."Цена"
+        FROM "История цены" ph
+        WHERE ph."ID ценной бумаги" = b."ID ценной бумаги"
+          AND ph."Дата" <= target_date
+        ORDER BY ph."Дата" DESC
         LIMIT 1
-    ) c ON TRUE
+    ) ph ON TRUE
     WHERE b."ID депозитарного счёта" = p_depo_id
       AND b."ID пользователя" = p_user_id;
 
-    RETURN COALESCE(current_value,0) - COALESCE(past_value,0);
+    RETURN COALESCE(current_value, 0) - COALESCE(past_value, 0);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -1205,22 +1228,46 @@ CREATE OR REPLACE FUNCTION calc_stock_growth(
 DECLARE
     today_price NUMERIC := 0;
     yesterday_price NUMERIC := 0;
+    latest_date DATE;
+    prev_date DATE;
 BEGIN
-    SELECT "Цена закрытия"
+    -- Находим последнюю дату с данными
+    SELECT MAX("Дата")
+    INTO latest_date
+    FROM "История цены"
+    WHERE "ID ценной бумаги" = p_paper_id;
+
+    -- Если нет данных
+    IF latest_date IS NULL THEN
+        RETURN 0;
+    END IF;
+
+    -- Получаем цену за последний день
+    SELECT "Цена"
     INTO today_price
     FROM "История цены"
     WHERE "ID ценной бумаги" = p_paper_id
-    ORDER BY "Время" DESC
+      AND "Дата" = latest_date
     LIMIT 1;
 
-    SELECT "Цена закрытия"
-    INTO yesterday_price
+    -- Находим предыдущую дату (последний день перед latest_date)
+    SELECT MAX("Дата")
+    INTO prev_date
     FROM "История цены"
     WHERE "ID ценной бумаги" = p_paper_id
-      AND "Время" < NOW() - INTERVAL '1 day'
-    ORDER BY "Время" DESC LIMIT 1;
+      AND "Дата" < latest_date;
 
-    RETURN COALESCE(today_price,0) - COALESCE(yesterday_price,0);
+    -- Если есть предыдущая дата, получаем цену за нее
+    IF prev_date IS NOT NULL THEN
+        SELECT "Цена"
+        INTO yesterday_price
+        FROM "История цены"
+        WHERE "ID ценной бумаги" = p_paper_id
+          AND "Дата" = prev_date
+        LIMIT 1;
+    END IF;
+
+    RETURN COALESCE(today_price, 0) - COALESCE(yesterday_price, 0);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -1311,43 +1358,55 @@ LANGUAGE plpgsql
 STABLE
 AS $$
 DECLARE
-    v_price_close    numeric;
-    v_security_cur   integer;
-    v_rate           numeric;
+    v_price         numeric;
+    v_security_cur  integer;
+    v_rate          numeric;
+    v_latest_date   date;
 BEGIN
-    -- 1. Берём последнюю цену закрытия и валюту бумаги
+    -- 1. Находим последнюю дату с данными для этой бумаги
+    SELECT MAX(ip."Дата")
+    INTO v_latest_date
+    FROM "История цены" ip
+    WHERE ip."ID ценной бумаги" = p_security_id;
+
+    -- Если данных нет
+    IF v_latest_date IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    -- 2. Берём последнюю цену и валюту бумаги
     SELECT
-        ip."Цена закрытия",
+        ip."Цена",
         s."ID валюты"
     INTO
-        v_price_close,
+        v_price,
         v_security_cur
     FROM "История цены" ip
     JOIN "Список ценных бумаг" s
         ON s."ID ценной бумаги" = ip."ID ценной бумаги"
     WHERE ip."ID ценной бумаги" = p_security_id
-    ORDER BY ip."Время" DESC
+      AND ip."Дата" = v_latest_date
     LIMIT 1;
 
     -- Если цена не найдена
-    IF v_price_close IS NULL THEN
+    IF v_price IS NULL THEN
         RETURN NULL;
     END IF;
 
-    -- 2. Если валюта совпадает — просто возвращаем цену
+    -- 3. Если валюта совпадает — просто возвращаем цену
     IF v_security_cur = p_currency_id THEN
-        RETURN v_price_close;
+        RETURN v_price;
     END IF;
 
-    -- 3. Получаем курс
+    -- 4. Получаем курс конвертации
     v_rate := get_currency_rate(v_security_cur, p_currency_id);
 
     IF v_rate IS NULL THEN
         RETURN NULL;
     END IF;
 
-    -- 4. Итоговая стоимость одной бумаги
-    RETURN ROUND(v_price_close / v_rate, 8);
+    -- 5. Итоговая стоимость одной бумаги в целевой валюте
+    RETURN ROUND(v_price / v_rate, 8);
 END;
 $$;
 
@@ -1362,22 +1421,22 @@ LANGUAGE plpgsql
 STABLE
 AS $$
 DECLARE
-    v_price_close numeric;
+    v_price numeric;
 BEGIN
-    -- Берём последнюю цену закрытия бумаги
-    SELECT ip."Цена закрытия"
-    INTO v_price_close
+    -- Берём последнюю цену бумаги
+    SELECT ip."Цена"
+    INTO v_price
     FROM "История цены" ip
     WHERE ip."ID ценной бумаги" = p_security_id
-    ORDER BY ip."Время" DESC
+    ORDER BY ip."Дата" DESC
     LIMIT 1;
 
     -- Если цена не найдена
-    IF v_price_close IS NULL THEN
+    IF v_price IS NULL THEN
         RETURN NULL;
     END IF;
 
-    RETURN v_price_close;
+    RETURN v_price;
 END;
 $$;
 
@@ -1752,7 +1811,6 @@ $BODY$;
 ALTER FUNCTION public.process_buy_proposal(integer, integer, boolean)
     OWNER TO postgres;
 
-
 CREATE OR REPLACE FUNCTION public.process_sell_proposal(
 	p_employee_id integer,
 	p_proposal_id integer,
@@ -1890,7 +1948,6 @@ $BODY$;
 ALTER FUNCTION public.process_sell_proposal(integer, integer, boolean)
     OWNER TO postgres;
 
-
 CREATE OR REPLACE FUNCTION process_proposal(
     p_employee_id INTEGER,
     p_proposal_id INTEGER,
@@ -1941,6 +1998,136 @@ BEGIN
 
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION public.add_stock(
+    p_ticker character varying,          -- Тикер (будет использоваться как "Наименование")
+    p_isin character varying,            -- ISIN код
+    p_lot_size numeric(12,2),            -- Размер лота (обязательный параметр)
+    p_price numeric(12,2),               -- Текущая цена
+    p_currency_id integer,               -- ID валюты из таблицы "Список валют"
+    p_has_dividends boolean              -- Выплачивает ли дивиденды
+)
+RETURNS integer  -- Возвращает ID добавленной ценной бумаги
+LANGUAGE 'plpgsql'
+VOLATILE
+COST 100
+AS $BODY$
+DECLARE
+    v_security_id INTEGER;
+BEGIN
+    -- 1. Проверка: размер лота должен быть строго больше нуля
+    IF p_lot_size <= 0 THEN
+        RAISE EXCEPTION 'Размер лота должен быть строго больше нуля (получено: %)', p_lot_size;
+    END IF;
+
+    -- 2. Проверка существования валюты
+    PERFORM 1
+    FROM public."Список валют"
+    WHERE "ID валюты" = p_currency_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Валюта с ID % не найдена', p_currency_id;
+    END IF;
+
+    -- 3. Проверка уникальности ISIN (если требуется по бизнес-логике)
+    PERFORM 1
+    FROM public."Список ценных бумаг"
+    WHERE "ISIN" = p_isin;
+
+    IF FOUND THEN
+        RAISE EXCEPTION 'Ценная бумага с ISIN % уже существует', p_isin;
+    END IF;
+
+    -- 4. Добавляем запись в "Список ценных бумаг"
+    INSERT INTO public."Список ценных бумаг" (
+        "Наименование",
+        "Размер лота",
+        "ISIN",
+        "Выплата дивидендов",
+        "ID валюты"
+    ) VALUES (
+        p_ticker,           -- Используем тикер как наименование
+        p_lot_size,
+        p_isin,
+        p_has_dividends,
+        p_currency_id
+    )
+    RETURNING "ID ценной бумаги" INTO v_security_id;
+
+    -- 5. Добавляем первую запись в историю цены с текущей датой
+    INSERT INTO public."История цены" (
+        "Дата",
+        "Цена",
+        "ID ценной бумаги"
+    ) VALUES (
+        CURRENT_DATE,       -- Сегодняшняя дата
+        p_price,
+        v_security_id
+    );
+
+    -- Возвращаем ID новой ценной бумаги
+    RETURN v_security_id;
+END;
+$BODY$;
+
+CREATE OR REPLACE FUNCTION public.change_stock_price(
+    p_stock_id integer,               -- ID ценной бумаги
+    p_new_price numeric(12,2)         -- Новая цена
+)
+RETURNS void
+LANGUAGE 'plpgsql'
+VOLATILE
+COST 100
+AS $BODY$
+DECLARE
+    v_today DATE := CURRENT_DATE;
+    v_exists INTEGER;
+BEGIN
+    -- Проверка существования ценной бумаги
+    PERFORM 1
+    FROM public."Список ценных бумаг"
+    WHERE "ID ценной бумаги" = p_stock_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Ценная бумага с ID % не найдена', p_stock_id;
+    END IF;
+
+    -- Проверка, что цена положительная
+    IF p_new_price <= 0 THEN
+        RAISE EXCEPTION 'Цена должна быть строго больше нуля (получено: %)', p_new_price;
+    END IF;
+
+    -- Проверяем, есть ли уже запись на сегодняшнюю дату
+    SELECT 1
+    INTO v_exists
+    FROM public."История цены"
+    WHERE "ID ценной бумаги" = p_stock_id
+      AND "Дата" = v_today;
+
+    IF FOUND THEN
+        -- Если запись на сегодня уже есть — обновляем цену
+        UPDATE public."История цены"
+        SET "Цена" = p_new_price
+        WHERE "ID ценной бумаги" = p_stock_id
+          AND "Дата" = v_today;
+
+        RAISE NOTICE 'Цена ценной бумаги ID % на дату % обновлена до %', p_stock_id, v_today, p_new_price;
+    ELSE
+        -- Если записи нет — добавляем новую
+        INSERT INTO public."История цены" (
+            "Дата",
+            "Цена",
+            "ID ценной бумаги"
+        ) VALUES (
+            v_today,
+            p_new_price,
+            p_stock_id
+        );
+
+        RAISE NOTICE 'Добавлена новая запись цены % для ценной бумаги ID % на дату %', p_new_price, p_stock_id, v_today;
+    END IF;
+END;
+$BODY$;
 
 -- =========================
 -- 3) ТЕСТОВЫЕ ДАННЫЕ

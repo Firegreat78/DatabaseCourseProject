@@ -519,17 +519,19 @@ class PriceHistory(Base):
     __tablename__ = "История цены"
 
     id = Column("ID зап. ист. цены", Integer, primary_key=True, nullable=False)
-    time = Column("Время", TIMESTAMP(6), nullable=False)
-    open_price = Column("Цена открытия", Numeric(12,2), nullable=False)
-    close_price = Column("Цена закрытия", Numeric(12,2), nullable=False)
-    min_price = Column("Цена минимальная", Numeric(12,2), nullable=False)
-    max_price = Column("Цена максимальная", Numeric(12,2), nullable=False)
-    security_id = Column("ID ценной бумаги", Integer, ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
-
+    date = Column("Время", Date, nullable=False)
+    price = Column("Цена открытия", Numeric(12,2), nullable=False)
+    security_id = Column(
+        "ID ценной бумаги",
+        Integer,
+        ForeignKey(
+            "Список ценных бумаг.ID ценной бумаги", ondelete="RESTRICT", onupdate="RESTRICT"
+        ),
+        nullable=False)
     security = relationship("Security", backref="price_history")
 
     def __repr__(self):
-        return f"<PriceHistory(id={self.id}, time={self.time}, open={self.open_price}, close={self.close_price}, security_id={self.security_id})>"
+        return f"<PriceHistory(id={self.id}, date={self.date}, price={self.price}, security_id={self.security_id})>"
 
 
 class CurrencyRate(Base):

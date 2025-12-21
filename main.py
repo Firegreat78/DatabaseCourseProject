@@ -258,7 +258,7 @@ async def get_user_balance(
     db: AsyncSession = Depends(get_db)
 ):
     if current_user["role"] != "user":
-        raise HTTPException(status_code=403, detail="Доступ запрещён")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
     user_id = current_user["id"]
 
@@ -272,7 +272,7 @@ async def get_user_balance(
         }
     except Exception as e:
         print(f"Ошибка расчёта баланса: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка сервера")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка сервера")
 
 @app.get("/api/currency/usd-rate")
 async def get_usd_rate(
@@ -281,7 +281,7 @@ async def get_usd_rate(
 ):
     # Опционально: можно разрешить только пользователям (не сотрудникам)
     if current_user["role"] != "user":
-        raise HTTPException(status_code=403, detail="Доступ запрещён")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
     try:
         query = text("SELECT get_currency_rate(2) AS usd_rate")
@@ -289,7 +289,7 @@ async def get_usd_rate(
         usd_rate = result.scalar()
 
         if usd_rate is None:
-            raise HTTPException(status_code=404, detail="Курс USD не найден")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Курс USD не найден")
 
         usd_rate_rounded = round(float(usd_rate), 4)
 
@@ -303,7 +303,7 @@ async def get_usd_rate(
         raise
     except Exception as e:
         print(f"Ошибка получения курса USD: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка сервера при получении курса")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка сервера при получении курса")
 
 @app.post("/api/passport", status_code=status.HTTP_201_CREATED)
 async def create_passport(
@@ -312,7 +312,7 @@ async def create_passport(
     db: AsyncSession = Depends(get_db)
 ):
     if current_user["role"] != "user":
-        raise HTTPException(status_code=403, detail="Доступ запрещён")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
     user_id = current_user["id"]
 
@@ -322,7 +322,7 @@ async def create_passport(
     )
     if existing.scalar_one_or_none():
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Паспорт уже привязан к пользователю"
         )
 
@@ -361,11 +361,11 @@ async def get_proposal_detail(
     result = await db.execute(select(Proposal).where(Proposal.id == proposal_id))
     proposal = result.scalar_one_or_none()
     if not proposal:
-        raise HTTPException(status_code=404, detail="Предложение не найдено")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Предложение не найдено")
 
     # Проверка прав доступа
     if current_user["role"] != "admin" and proposal.user.id != current_user.get("id"):
-        raise HTTPException(status_code=403, detail="Доступ запрещён")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
     passports = [
         {k: v for k, v in p.__dict__.items() if k != "_sa_instance_state"}
@@ -433,7 +433,7 @@ async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
     return {k: v for k, v in user.__dict__.items() if k != "_sa_instance_state"}
 
 @app.get("/api/broker/proposal/{proposal_id}")
@@ -453,7 +453,7 @@ async def get_proposal_detail(
     
     proposal = result.scalar_one_or_none()
     if not proposal:
-        raise HTTPException(status_code=404, detail="Предложение не найдено")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Предложение не найдено")
 
     return {
         "id": proposal.id,
@@ -476,7 +476,7 @@ async def get_all_proposals(
     current_user: dict = Depends(get_current_user)
 ):
     if current_user.get("role") != "broker":
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещен")
 
     result = await db.execute(
         select(Proposal)
@@ -525,7 +525,7 @@ async def get_staff_profile(
     staff = result.scalar_one_or_none()
 
     if not staff:
-        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден")
 
     return {
         "id": staff.id,
@@ -554,7 +554,7 @@ async def update_staff(
     staff = result.scalar_one_or_none()
 
     if not staff:
-        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден")
         
     result_login = await db.execute(
         select(Staff).where(Staff.login == data.login, Staff.id != staff_id)
@@ -654,7 +654,7 @@ async def get_user_passport(
     row = result.first()
 
     if not row:
-        raise HTTPException(status_code=404, detail="Паспорт не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Паспорт не найден")
 
     passport, verification_status_id = row
 
@@ -692,7 +692,7 @@ async def update_user_verification_status(
     user = result.scalar_one_or_none()
 
     if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
 
     user.verification_status_id = data.verification_status_id
 
@@ -716,19 +716,19 @@ async def create_brokerage_account(
     db: AsyncSession = Depends(get_db)
 ):
     if current_user["role"] != "user":
-        raise HTTPException(status_code=403, detail="Доступ запрещён")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
     # Проверяем банк
     result = await db.execute(select(Bank).where(Bank.id == account_data.bank_id))
     bank = result.scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail="Банк не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Банк не найден")
 
     # Проверяем валюту
     result = await db.execute(select(Currency).where(Currency.id == account_data.currency_id))
     currency = result.scalar_one_or_none()
     if not currency:
-        raise HTTPException(status_code=404, detail="Валюта не найдена")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Валюта не найдена")
 
     # Создаём счёт с балансом 0
     new_account = BrokerageAccount(
