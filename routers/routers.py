@@ -77,15 +77,28 @@ async def get_user_brokerage_accounts(
 
     return result.mappings().all()
 
+class SecuritiesResponse(BaseModel):
+    security_name: str
+    lot_size: float
+    isin: str
+    has_dividends: bool
+    amount: float
+    currency_code: str
+    currency_symbol: str
 
-@brokerage_accounts_router.get("/portfolio/securities")
+    class Config:
+        from_attributes = True
+
+
+
+@brokerage_accounts_router.get("/portfolio/securities", response_model=List[SecuritiesResponse])
 async def get_portfolio_securities(
     current_user = Depends(get_current_user),  # ← берём пользователя из токена
     db: AsyncSession = Depends(get_db)
 ):
-    user_id = current_user["id"]  # или current_user.user_id — как у тебя в модели
+    user_id = current_user["id"]
 
-    query = text("SELECT * FROM get_user_securities(:user_id)")
+    query = text("SELECT * FROM get_user_securities(:user_id) WHERE amount > 0")
     result = await db.execute(query, {"user_id": user_id})
     securities = result.fetchall()
 
@@ -101,7 +114,6 @@ async def get_portfolio_securities(
         }
         for row in securities
     ]
-
     return securities_list
 
 
