@@ -37,7 +37,8 @@ from db.models.models import (
     Security,
     Staff,
     User,
-    VerificationStatus
+    VerificationStatus,
+    UserRestrictionStatus
 )
 
 app = FastAPI()
