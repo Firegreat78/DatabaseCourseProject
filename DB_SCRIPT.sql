@@ -1752,18 +1752,144 @@ $BODY$;
 ALTER FUNCTION public.process_buy_proposal(integer, integer, boolean)
     OWNER TO postgres;
 
-CREATE OR REPLACE FUNCTION process_sell_proposal(
-    p_employee_id INTEGER,
-    p_proposal_id INTEGER,
-    p_verify BOOLEAN
-)
-RETURNS VOID AS $$
+
+CREATE OR REPLACE FUNCTION public.process_sell_proposal(
+	p_employee_id integer,
+	p_proposal_id integer,
+	p_verify boolean)
+    RETURNS void
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
+DECLARE
+    v_proposal RECORD;
+
+    v_brokerage_account_id INTEGER;
+    v_security_id INTEGER;
+    v_quantity NUMERIC(12,2);          -- количество ценных бумаг
+    v_cost NUMERIC(12,2);              -- ожидаемая сумма в валюте (при продаже)
+
+    v_deposit_account_id INTEGER;
+    v_user_id INTEGER;
+
+    v_broker_operation_id INTEGER;     -- ID операции в истории бр. счёта (сумма 0 изначально)
+
+    c_sell_type_id CONSTANT INTEGER := 2;                   -- Тип предложения "Продажа"
+    c_active_status_id CONSTANT INTEGER := 3;               -- Статус "Новое/Активное"
+    c_approved_status_id CONSTANT INTEGER := 2;             -- Статус "Одобрено"
+    c_rejected_status_id CONSTANT INTEGER := 1;             -- Статус "Отклонено"
+
+    -- Типы операций депозитарного счёта
+    c_deposit_withdraw_type_id CONSTANT INTEGER := 2;       -- Списание ценных бумаг (при продаже)
+    c_deposit_deposit_type_id CONSTANT INTEGER := 1;        -- Зачисление ценных бумаг (при отклонении)
 BEGIN
-    -- Здесь будет логика обработки предложения на продажу
-    -- (пока пустая — будет заполнена позже)
-    NULL;
+    -- 1. Получаем данные предложения и проверяем, что оно активно и на продажу
+    SELECT
+        p."ID предложения",
+        p."ID брокерского счёта",
+        p."ID ценной бумаги",
+        p."Сумма" AS quantity,
+        p."Сумма в валюте" AS cost,
+        p."ID операции бр. счёта" AS broker_operation_id,
+        ba."ID пользователя"
+    INTO v_proposal
+    FROM public."Предложение" p
+    JOIN public."Брокерский счёт" ba ON ba."ID брокерского счёта" = p."ID брокерского счёта"
+    WHERE p."ID предложения" = p_proposal_id
+      AND p."ID типа предложения" = c_sell_type_id
+      AND p."ID статуса предложения" = c_active_status_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Предложение на продажу с ID % не найдено или уже обработано', p_proposal_id;
+    END IF;
+
+    v_brokerage_account_id := v_proposal."ID брокерского счёта";
+    v_security_id := v_proposal."ID ценной бумаги";
+    v_quantity := v_proposal.quantity;
+    v_cost := v_proposal.cost;
+    v_broker_operation_id := v_proposal.broker_operation_id;
+    v_user_id := v_proposal."ID пользователя";
+
+    -- 2. Находим депозитарный счёт пользователя
+    SELECT "ID депозитарного счёта"
+    INTO v_deposit_account_id
+    FROM public."Депозитарный счёт"
+    WHERE "ID пользователя" = v_user_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'У пользователя с ID % не найден депозитарный счёт', v_user_id;
+    END IF;
+
+	-- Одобрение заявки на продажу ценных бумаг:
+	-- 1. Пополнение брокерского счёта, который используется для покупки бумаг
+	-- 2. Изменение статуса на "Одобрено".
+    IF p_verify THEN
+        UPDATE public."История операций бр. счёта"
+        SET "Сумма операции" = v_cost
+        WHERE "ID операции бр. счёта" = v_broker_operation_id;
+		UPDATE public."Брокерский счёт"
+		SET "Баланс" = "Баланс" + v_cost
+		WHERE "ID брокерского счёта" = v_brokerage_account_id;
+
+		UPDATE public."Предложение"
+        SET "ID статуса предложения" = c_approved_status_id
+        WHERE "ID предложения" = p_proposal_id;
+
+	-- Отклонение заявки на продажу ценных бумаг:
+	-- 1. Разморозка замороженных ценных бумаг
+	-- 2. Изменение статуса на "Отклонено".
+    ELSE
+        PERFORM 1
+        FROM public."Баланс депозитарного счёта"
+        WHERE "ID депозитарного счёта" = v_deposit_account_id
+          AND "ID пользователя" = v_user_id
+          AND "ID ценной бумаги" = v_security_id;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'В балансе депозитарного счёта отсутствует запись для ценной бумаги ID %', v_security_id;
+        END IF;
+
+        UPDATE public."Баланс депозитарного счёта"
+        SET "Сумма" = "Сумма" + v_quantity
+        WHERE "ID депозитарного счёта" = v_deposit_account_id
+          AND "ID пользователя" = v_user_id
+          AND "ID ценной бумаги" = v_security_id;
+
+        INSERT INTO public."История операций деп. счёта" (
+            "Сумма операции",
+            "Время",
+            "ID депозитарного счёта",
+            "ID пользователя",
+            "ID ценной бумаги",
+            "ID сотрудника",
+            "ID операции бр. счёта",
+            "ID брокерского счёта",
+            "ID типа операции деп. счёта"
+        ) VALUES (
+            v_quantity,
+            CURRENT_TIMESTAMP,
+            v_deposit_account_id,
+            v_user_id,
+            v_security_id,
+            p_employee_id,
+            v_broker_operation_id,
+            v_brokerage_account_id,
+            c_deposit_deposit_type_id
+        );
+
+        UPDATE public."Предложение"
+        SET "ID статуса предложения" = c_rejected_status_id
+        WHERE "ID предложения" = p_proposal_id;
+    END IF;
+
+    RAISE NOTICE 'Предложение на продажу % успешно %', p_proposal_id, CASE WHEN p_verify THEN 'одобрено' ELSE 'отклонено' END;
 END;
-$$ LANGUAGE plpgsql;
+$BODY$;
+
+ALTER FUNCTION public.process_sell_proposal(integer, integer, boolean)
+    OWNER TO postgres;
+
 
 CREATE OR REPLACE FUNCTION process_proposal(
     p_employee_id INTEGER,
