@@ -1024,6 +1024,120 @@ async def process_proposal(
             status_code=status_code,
             detail=error_msg if status_code != 500 else "Внутренняя ошибка сервера при обработке заявки"
         )
+    
+@app.patch("/api/proposal/{proposal_id}/cancel")
+async def cancel_proposal(
+    proposal_id: int = Path(..., gt=0, description="ID предложения"),
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Отмена заявки клиентом.
+    Клиент может отменить только свои заявки со статусом "ожидание" (status_id=3).
+    Используется сотрудник с правами уровня 5 для системной отмены.
+    """
+    
+    # Проверяем, что это клиент (пользователь)
+    if current_user["role"] != "user":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Только клиенты могут отменять свои заявки"
+        )
+    
+    user_id = current_user["id"]
+    
+    try:
+        # 1. Проверяем, что заявка существует и принадлежит пользователю
+        result = await db.execute(
+            select(Proposal)
+            .join(Proposal.brokerage_account)
+            .options(joinedload(Proposal.status))
+            .where(
+                Proposal.id == proposal_id,
+                BrokerageAccount.user_id == user_id
+            )
+        )
+        proposal = result.scalar_one_or_none()
+        
+        if not proposal:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Заявка не найдена или у вас нет прав для её отмены"
+            )
+        
+        # 2. Проверяем статус заявки (только статус "ожидание" можно отменить)
+        if proposal.status_id != 3:  # 3 - статус "ожидание"
+            current_status = proposal.status.status if proposal.status else f"ID={proposal.status_id}"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Невозможно отменить заявку со статусом '{current_status}'. "
+                       f"Отмена возможна только для заявок в статусе 'ожидание'."
+            )
+        
+        # 3. Находим сотрудника с правами уровня 5 (системный сотрудник)
+        result = await db.execute(
+            select(Staff).where(Staff.rights_level == '5')
+        )
+        system_staff = result.scalar_one_or_none()
+        
+        if not system_staff:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Системный сотрудник (права уровня 5) не найден. Обратитесь в поддержку."
+            )
+        
+        staff_id = system_staff.id
+        
+        print(f"DEBUG: Cancelling proposal {proposal_id} by system staff {staff_id}")
+        
+        # 4. Вызываем PostgreSQL функцию process_proposal для отмены (verify=False)
+        query = text("SELECT process_proposal(:staff_id, :proposal_id, :verify)")
+        await db.execute(
+            query,
+            {
+                "staff_id": staff_id,
+                "proposal_id": proposal_id,
+                "verify": False  # False означает отклонение/отмену
+            }
+        )
+        await db.commit()
+        
+        # 5. Получаем обновленную информацию о заявке
+        result = await db.execute(
+            select(Proposal)
+            .options(joinedload(Proposal.status))
+            .where(Proposal.id == proposal_id)
+        )
+        updated_proposal = result.scalar_one_or_none()
+        
+        return {
+            "message": f"Заявка №{proposal_id} успешно отменена",
+            "proposal_id": proposal_id,
+            "new_status": updated_proposal.status.status if updated_proposal.status else "отменено",
+            "status_id": updated_proposal.status_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        error_msg = str(e)
+        print(f"ERROR in cancel_proposal: {error_msg}")
+        
+        # Парсинг сообщения об ошибке из PostgreSQL
+        if "не найден" in error_msg.lower():
+            status_code = status.HTTP_404_NOT_FOUND
+        elif "уже обработана" in error_msg.lower() or "недопустимый статус" in error_msg.lower():
+            status_code = status.HTTP_400_BAD_REQUEST
+        elif "неизвестный тип предложения" in error_msg.lower():
+            status_code = status.HTTP_400_BAD_REQUEST
+        else:
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        
+        raise HTTPException(
+            status_code=status_code,
+            detail=error_msg if status_code != 500 else "Внутренняя ошибка сервера при отмене заявки"
+        )
 
 
 class UserUpdate(BaseModel):
@@ -1044,7 +1158,6 @@ class UserUpdate(BaseModel):
         return v
 
 
-# Добавьте этот эндпоинт для обновления пользователя (можно разместить после GET /api/user/{user_id})
 @app.put("/api/user/{user_id}")
 async def update_user(
         user_id: int,
