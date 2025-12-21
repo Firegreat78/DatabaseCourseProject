@@ -251,6 +251,7 @@ async def get_brokerage_account_operations(
     query = text("""
         SELECT * 
         FROM get_brokerage_account_operations(:account_id)
+        WHERE "Тип операции" != 'Empty'
     """)
 
     result = await db.execute(query, {"account_id": account_id})
@@ -379,11 +380,17 @@ async def create_balance_change_request(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недостаточно средств на счёте")
 
     # 3. Выполняем изменение баланса и запись в историю одной атомарной функцией в БД
+
     query = text(
-        "SELECT change_brokerage_account_balance(:account_id, :amount, :staff_id);"
+        f"SELECT change_brokerage_account_balance(:account_id, :amount, :brokerage_operation_id, :staff_id);"
     )
     try:
-        await db.execute(query, {"account_id": account_id, "amount": data.amount, "staff_id": 5})
+        await db.execute(query, {
+            "account_id": account_id,
+            "amount": data.amount,
+            "staff_id": 5,
+            "brokerage_operation_id": 1 if data.amount > 0 else 2
+        })
         await db.commit()
     except Exception as e:
         await db.rollback()

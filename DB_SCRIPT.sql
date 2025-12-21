@@ -668,13 +668,19 @@ VALUES
 INSERT INTO "Тип операции депозитарного счёта"("Тип")
 VALUES
 ('Покупка'),
-('Продажа');
+('Продажа'),
+('Заморозка ЦБ'),
+('Разморозка ЦБ');
 
 -- 8. Типы операций брокерского счёта
 INSERT INTO "Тип операции брокерского счёта"("Тип")
 VALUES
 ('Пополнение'),
-('Снятие');
+('Снятие'),
+('Покупка ЦБ'),
+('Покупка ЦБ (в)'),
+('Продажа ЦБ'),
+('Empty');
 
 -- 9. Типы предложений
 INSERT INTO "Тип предложения"("Тип")
@@ -695,23 +701,26 @@ VALUES
 CREATE OR REPLACE FUNCTION public.change_brokerage_account_balance(
     p_account_id integer,
     p_amount numeric,
+    p_brokerage_operation_type integer,  -- Теперь используется как ID типа операции
     p_staff_id integer DEFAULT 5
 )
-    RETURNS INTEGER  -- ← изменено: теперь возвращает INTEGER
+    RETURNS INTEGER
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE SECURITY DEFINER PARALLEL UNSAFE
 AS $BODY$
 DECLARE
     v_current_balance NUMERIC(12,2);
-    v_operation_type_id INTEGER;
-    v_operation_id INTEGER;  -- ← новая переменная для ID операции
+    v_operation_id INTEGER;
 BEGIN
-    -- Определяем тип операции: пополнение = 1, вывод = 2
-    v_operation_type_id := CASE
-        WHEN p_amount > 0 THEN 1
-        ELSE 2
-    END;
+    -- Проверяем, существует ли тип операции
+    PERFORM 1
+    FROM public."Тип операции брокерского счёта"
+    WHERE "ID типа операции бр. счёта" = p_brokerage_operation_type;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Тип операции брокерского счёта с ID % не найден', p_brokerage_operation_type;
+    END IF;
 
     -- Блокируем строку счёта
     PERFORM 1 FROM "Брокерский счёт"
@@ -744,21 +753,21 @@ BEGIN
         "Время",
         "ID брокерского счёта",
         "ID сотрудника",
-        "ID типа операции бр. счёта"
+        "ID типа операции бр. счёта"  -- Теперь используем p_brokerage_operation_type
     ) VALUES (
         p_amount,
         now(),
         p_account_id,
         p_staff_id,
-        v_operation_type_id
+        p_brokerage_operation_type  -- ← Вставляем p_brokerage_operation_type вместо v_operation_type_id
     )
-    RETURNING "ID операции бр. счёта" INTO v_operation_id;  -- ← ключевая строка
+    RETURNING "ID операции бр. счёта" INTO v_operation_id;
 
-    RETURN v_operation_id;  -- ← возвращаем ID
+    RETURN v_operation_id;
 END;
 $BODY$;
 
-ALTER FUNCTION public.change_brokerage_account_balance(integer, numeric, integer)
+ALTER FUNCTION public.change_brokerage_account_balance(integer, numeric, integer, integer)
     OWNER TO postgres;
 
 CREATE OR REPLACE FUNCTION check_user_verification_status(user_id integer)
@@ -1465,6 +1474,7 @@ BEGIN
     SELECT change_brokerage_account_balance(
         p_account_id := p_brokerage_account_id,
         p_amount     := -v_total_cost,
+        p_brokerage_operation_type := 3,        -- <-- Исправлено: теперь именованный
         p_staff_id   := v_employee_id
     ) INTO v_operation_id;
 
@@ -1516,6 +1526,7 @@ DECLARE
     v_sell_type_id INTEGER := 2;      -- Тип предложения: продажа
     v_active_status_id INTEGER := 3;  -- Статус нового предложения
     v_employee_id INTEGER := 5;       -- Сотрудник по умолчанию
+	v_empty_brokerage_type INTEGER := 6; -- Неотображающаяся операция
 
     v_deposit_operation_type_id INTEGER := 2; -- Тип операции деп. счёта: заморозка
 BEGIN
@@ -1596,7 +1607,7 @@ BEGIN
         CURRENT_TIMESTAMP,
         p_brokerage_account_id,
         v_employee_id,
-        1  -- тип 1 (пополнение), т.к. сумма = 0
+        v_empty_brokerage_type
     )
     RETURNING "ID операции бр. счёта" INTO v_brokerage_operation_id;
 
@@ -1676,6 +1687,7 @@ DECLARE
     c_approved_status_id CONSTANT INTEGER := 2;             -- Статус "Одобрено"
     c_rejected_status_id CONSTANT INTEGER := 1;             -- Статус "Отклонено"
     c_deposit_operation_type_id CONSTANT INTEGER := 1;      -- Тип операции деп. счёта "Зачисление ценных бумаг"
+	c_brokerage_operation_return_type_id CONSTANT INTEGER := 4;
 BEGIN
     -- 1. Получаем данные предложения и проверяем его состояние
     SELECT
@@ -1767,10 +1779,11 @@ BEGIN
 
         -- Возвращаем деньги на брокерский счёт (зачисление)
         SELECT change_brokerage_account_balance(
-            p_account_id := v_brokerage_account_id,
-            p_amount := v_cost,           -- положительная сумма = зачисление
-            p_staff_id := p_employee_id
-        ) INTO v_new_broker_operation_id;
+    p_account_id := v_brokerage_account_id,
+    p_amount := v_cost,
+    p_brokerage_operation_type := c_brokerage_operation_return_type_id, -- <-- Исправлено
+    p_staff_id := p_employee_id
+) INTO v_new_broker_operation_id;
 
         -- Меняем статус предложения на "Отклонено"
         UPDATE public."Предложение"
@@ -1815,6 +1828,7 @@ DECLARE
     -- Типы операций депозитарного счёта
     c_deposit_withdraw_type_id CONSTANT INTEGER := 2;       -- Списание ценных бумаг (при продаже)
     c_deposit_deposit_type_id CONSTANT INTEGER := 1;        -- Зачисление ценных бумаг (при отклонении)
+	c_brokerage_operation_sell_id CONSTANT INTEGER := 5;
 BEGIN
     -- 1. Получаем данные предложения и проверяем, что оно активно и на продажу
     SELECT
@@ -1858,8 +1872,11 @@ BEGIN
 	-- 2. Изменение статуса на "Одобрено".
     IF p_verify THEN
         UPDATE public."История операций бр. счёта"
-        SET "Сумма операции" = v_cost
+        SET "Сумма операции" = v_cost,
+		"ID типа операции бр. счёта" = c_brokerage_operation_sell_id,
+		"Время" = CURRENT_TIMESTAMP
         WHERE "ID операции бр. счёта" = v_broker_operation_id;
+
 		UPDATE public."Брокерский счёт"
 		SET "Баланс" = "Баланс" + v_cost
 		WHERE "ID брокерского счёта" = v_brokerage_account_id;
