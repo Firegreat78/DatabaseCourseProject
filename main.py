@@ -817,6 +817,84 @@ async def create_stock(
         "id": security.id,
     }
 
+class ProcessProposalRequest(BaseModel):
+    verify: bool
+
+@app.patch("/api/proposal/{proposal_id}/process")
+async def process_proposal(
+    proposal_id: int = Path(..., gt=0, description="ID предложения"),
+    request_data: ProcessProposalRequest = None,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    print(f"DEBUG: current_user = {current_user}")  # Отладочная информация
+    
+    payload = current_user.get("payload")
+    staff_id = payload.get("staff_id")
+    
+    if not staff_id:
+        print(f"DEBUG: No staff_id found in token: {current_user}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Не удалось определить ID сотрудника из токена"
+        )
+    
+    # Проверяем, что сотрудник существует
+    result = await db.execute(
+        select(Staff).where(Staff.id == staff_id)
+    )
+    staff = result.scalar_one_or_none()
+    
+    if not staff:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Сотрудник с ID {staff_id} не найден"
+        )
+    
+    verify = request_data.verify if request_data else False
+
+    try:
+        print(f"DEBUG: Calling process_proposal with staff_id={staff_id}, proposal_id={proposal_id}, verify={verify}")
+        
+        # Вызов функции process_proposal из PostgreSQL
+        query = text("SELECT process_proposal(:staff_id, :proposal_id, :verify)")
+        await db.execute(
+            query, 
+            {
+                "staff_id": staff_id, 
+                "proposal_id": proposal_id, 
+                "verify": verify
+            }
+        )
+        await db.commit()
+        
+        action = "подтверждена" if verify else "отклонена"
+        return {
+            "message": f"Заявка №{proposal_id} успешно {action}",
+            "proposal_id": proposal_id,
+            "action": "approved" if verify else "rejected"
+        }
+        
+    except Exception as e:
+        await db.rollback()
+        error_msg = str(e)
+        print(f"ERROR in process_proposal: {error_msg}")
+        
+        # Парсинг сообщения об ошибке из PostgreSQL
+        if "не найден" in error_msg.lower():
+            status_code = status.HTTP_404_NOT_FOUND
+        elif "уже обработана" in error_msg.lower() or "недопустимый статус" in error_msg.lower():
+            status_code = status.HTTP_400_BAD_REQUEST
+        elif "неизвестный тип предложения" in error_msg.lower():
+            status_code = status.HTTP_400_BAD_REQUEST
+        else:
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            
+        raise HTTPException(
+            status_code=status_code,
+            detail=error_msg if status_code != 500 else "Внутренняя ошибка сервера при обработке заявки"
+        )
+
 def run():
     # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
     uvicorn.run("main:app", host=HOST, port=PORT, reload=True)
