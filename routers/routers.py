@@ -395,3 +395,76 @@ async def create_balance_change_request(
         "message": "Баланс успешно изменён",
         "new_balance": float(account.balance)
     }
+
+
+class CurrencyResponse(BaseModel):
+    id: int
+    code: str
+    symbol: str
+
+    class Config:
+        from_attributes = True
+
+
+@brokerage_accounts_router.get("/currencies", response_model=list[CurrencyResponse])
+async def get_currencies(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Currency))
+    currencies = result.scalars().all()
+
+    if not currencies:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="В базе данных отсутствуют записи о валютах. Добавьте хотя бы одну валюту в таблицу \"Список валют\"."
+        )
+
+    return [CurrencyResponse(id=c.id, code=c.code, symbol=c.symbol) for c in currencies]
+
+
+class StockCreate(BaseModel):
+    ticker: str
+    isin: str
+    lot_size: Decimal = Decimal("1.00")
+    price: Decimal
+    currency_id: int
+    has_dividends: bool = False
+
+@brokerage_accounts_router.post("/exchange/stocks", status_code=status.HTTP_201_CREATED)
+async def create_stock(
+    data: StockCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        # Вызываем нашу PL/pgSQL функцию add_stock, которая делает все проверки и вставки
+        result = await db.execute(
+            text("""
+                SELECT public.add_stock(
+                    :ticker,
+                    :isin,
+                    :lot_size,
+                    :price,
+                    :currency_id,
+                    :has_dividends
+                )
+            """),
+            {
+                "ticker": data.ticker,
+                "isin": data.isin,
+                "lot_size": data.lot_size,
+                "price": data.price,
+                "currency_id": data.currency_id,
+                "has_dividends": data.has_dividends,
+            }
+        )
+        await db.commit()
+        new_security_id = result.scalar_one()
+
+        return {
+            "message": "Акция успешно добавлена",
+            "id": new_security_id,
+        }
+
+    except Exception as e:
+        # Перехватываем ошибки из функции (RAISE EXCEPTION в PL/pgSQL)
+        if "RAISE" in str(e) or "Exception" in str(e):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.orig))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при добавлении акции")
