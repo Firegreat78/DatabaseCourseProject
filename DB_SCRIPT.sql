@@ -96,12 +96,8 @@ CREATE TABLE "Статус верификации"
   "ID статуса верификации" Serial NOT NULL,
   "Статус верификации" Character varying(20) NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-ALTER TABLE "Статус верификации" ADD CONSTRAINT "Unique_Identifier4" PRIMARY KEY ("ID статуса верификации")
-;
+WITH (autovacuum_enabled=true);
+ALTER TABLE "Статус верификации" ADD CONSTRAINT "Unique_Identifier4" PRIMARY KEY ("ID статуса верификации");
 
 -- Table Персонал
 
@@ -1978,20 +1974,21 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION public.add_stock(
-    p_ticker character varying,          -- Тикер (будет использоваться как "Наименование")
-    p_isin character varying,            -- ISIN код
-    p_lot_size numeric(12,2),            -- Размер лота (обязательный параметр)
-    p_price numeric(12,2),               -- Текущая цена
-    p_currency_id integer,               -- ID валюты из таблицы "Список валют"
-    p_has_dividends boolean              -- Выплачивает ли дивиденды
+    p_ticker character varying,
+    p_isin character varying,
+    p_lot_size numeric,
+    p_price numeric,
+    p_currency_id integer,
+    p_has_dividends boolean
 )
-RETURNS integer  -- Возвращает ID добавленной ценной бумаги
+RETURNS integer
 LANGUAGE 'plpgsql'
-VOLATILE
 COST 100
+VOLATILE PARALLEL UNSAFE
 AS $BODY$
 DECLARE
     v_security_id INTEGER;
+    r_deposit_account RECORD;
 BEGIN
     -- 1. Проверка: размер лота должен быть строго больше нуля
     IF p_lot_size <= 0 THEN
@@ -2007,7 +2004,7 @@ BEGIN
         RAISE EXCEPTION 'Валюта с ID % не найдена', p_currency_id;
     END IF;
 
-    -- 3. Проверка уникальности ISIN (если требуется по бизнес-логике)
+    -- 3. Проверка уникальности ISIN
     PERFORM 1
     FROM public."Список ценных бумаг"
     WHERE "ISIN" = p_isin;
@@ -2024,7 +2021,7 @@ BEGIN
         "Выплата дивидендов",
         "ID валюты"
     ) VALUES (
-        p_ticker,           -- Используем тикер как наименование
+        p_ticker,
         p_lot_size,
         p_isin,
         p_has_dividends,
@@ -2032,21 +2029,43 @@ BEGIN
     )
     RETURNING "ID ценной бумаги" INTO v_security_id;
 
-    -- 5. Добавляем первую запись в историю цены с текущей датой
+    -- 5. Добавляем первую запись в историю цены
     INSERT INTO public."История цены" (
         "Дата",
         "Цена",
         "ID ценной бумаги"
     ) VALUES (
-        CURRENT_DATE,       -- Сегодняшняя дата
+        CURRENT_DATE,
         p_price,
         v_security_id
     );
+
+    -- 6. Цикл по всем депозитарным счетам и добавление нулевого баланса для новой бумаги
+    FOR r_deposit_account IN
+        SELECT "ID депозитарного счёта", "ID пользователя"
+        FROM public."Депозитарный счёт"
+    LOOP
+        INSERT INTO public."Баланс депозитарного счёта" (
+            "Сумма",
+            "ID депозитарного счёта",
+            "ID пользователя",
+            "ID ценной бумаги"
+        )
+        VALUES (
+            0.00,
+            r_deposit_account."ID депозитарного счёта",
+            r_deposit_account."ID пользователя",
+            v_security_id
+        );
+    END LOOP;
 
     -- Возвращаем ID новой ценной бумаги
     RETURN v_security_id;
 END;
 $BODY$;
+
+ALTER FUNCTION public.add_stock(character varying, character varying, numeric, numeric, integer, boolean)
+    OWNER TO postgres;
 
 CREATE OR REPLACE FUNCTION public.change_stock_price(
     p_stock_id integer,               -- ID ценной бумаги
@@ -2106,6 +2125,84 @@ BEGIN
     END IF;
 END;
 $BODY$;
+
+
+-- FUNCTION: public.verify_user_passport(integer)
+
+-- DROP FUNCTION IF EXISTS public.verify_user_passport(integer);
+
+CREATE OR REPLACE FUNCTION public.verify_user_passport(
+    p_passport_id integer)
+    RETURNS void
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
+DECLARE
+    v_user_id integer;
+    v_deposit_account_id integer;
+    v_securities RECORD;
+BEGIN
+    -- Находим ID пользователя по паспорту
+    SELECT "ID пользователя" INTO v_user_id
+    FROM public."Паспорт"
+    WHERE "ID паспорта" = p_passport_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Паспорт с ID % не найден', p_passport_id;
+    END IF;
+
+    -- Проверяем, есть ли уже депозитарный счёт у пользователя
+    SELECT "ID депозитарного счёта" INTO v_deposit_account_id
+    FROM public."Депозитарный счёт"
+    WHERE "ID пользователя" = v_user_id;
+
+    IF FOUND THEN
+        RAISE EXCEPTION 'У пользователя с ID % уже существует депозитарный счёт. Повторная верификация паспорта невозможна.', v_user_id;
+    END IF;
+
+    -- Создаём новый депозитарный счёт
+    INSERT INTO public."Депозитарный счёт" (
+        "Номер депозитарного договора",
+        "Дата открытия",
+        "ID пользователя"
+    )
+    VALUES (
+        'Договор № ' || to_char(current_date, 'YYYYMMDD') || '-' || v_user_id,  -- пример генерации номера
+        current_date,
+        v_user_id
+    )
+    RETURNING "ID депозитарного счёта" INTO v_deposit_account_id;
+
+    -- Создаём записи в таблице баланса для каждой ценной бумаги с нулевым остатком
+    FOR v_securities IN
+        SELECT "ID ценной бумаги"
+        FROM public."Список ценных бумаг"
+    LOOP
+        INSERT INTO public."Баланс депозитарного счёта" (
+            "Сумма",
+            "ID депозитарного счёта",
+            "ID пользователя",
+            "ID ценной бумаги"
+        )
+        VALUES (
+            0.00,
+            v_deposit_account_id,
+            v_user_id,
+            v_securities."ID ценной бумаги"
+        );
+    END LOOP;
+
+    -- Помечаем паспорт как актуальный после успешной верификации
+    UPDATE public."Паспорт"
+    SET "Актуальность" = true
+    WHERE "ID паспорта" = p_passport_id;
+
+END;
+$BODY$;
+
+ALTER FUNCTION public.verify_user_passport(integer)
+    OWNER TO postgres;
 
 -- =========================
 -- 3) ТЕСТОВЫЕ ДАННЫЕ
