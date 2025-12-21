@@ -468,3 +468,33 @@ async def create_stock(
         if "RAISE" in str(e) or "Exception" in str(e):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.orig))
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при добавлении акции")
+
+
+class CheckBannedStatus(BaseModel):
+    is_banned: bool
+
+    class Config:
+        from_attributes = True
+
+
+@brokerage_accounts_router.get(
+    "/user_ban_status/{user_id}",
+    response_model=CheckBannedStatus,
+    status_code=status.HTTP_200_OK
+)
+async def get_banned_status(
+    user_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(User.block_status_id)
+        .where(User.id == user_id)
+    )
+    row = result.first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+    ban_status_id = row[0]
+    return CheckBannedStatus(is_banned=(ban_status_id == 2))

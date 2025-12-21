@@ -81,17 +81,13 @@ CREATE TABLE "Пользователь"
   "Дата регистрации" Date NOT NULL,
   "Логин" Character varying(30) NOT NULL,
   "Пароль" Character varying(60) NOT NULL,
-  "ID статуса верификации" Integer NOT NULL
+  "ID статуса верификации" Integer NOT NULL,
+  "ID статуса блокировки" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
+WITH (autovacuum_enabled=true);
 
-CREATE INDEX "IX_Relationship4" ON "Пользователь" ("ID статуса верификации")
-;
-
-ALTER TABLE "Пользователь" ADD CONSTRAINT "Unique_Identifier9" PRIMARY KEY ("ID пользователя")
-;
+CREATE INDEX "IX_Relationship4" ON "Пользователь" ("ID статуса верификации");
+ALTER TABLE "Пользователь" ADD CONSTRAINT "Unique_Identifier9" PRIMARY KEY ("ID пользователя");
 
 -- Table Статус верификации
 
@@ -165,15 +161,9 @@ CREATE TABLE "Баланс депозитарного счёта"
   "ID пользователя" Integer NOT NULL,
   "ID ценной бумаги" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-CREATE INDEX "IX_Relationship17" ON "Баланс депозитарного счёта" ("ID ценной бумаги")
-;
-
-ALTER TABLE "Баланс депозитарного счёта" ADD CONSTRAINT "Unique_Identifier19" PRIMARY KEY ("ID баланса депозитарного счёта","ID депозитарного счёта","ID пользователя")
-;
+WITH (autovacuum_enabled=true);
+CREATE INDEX "IX_Relationship17" ON "Баланс депозитарного счёта" ("ID ценной бумаги");
+ALTER TABLE "Баланс депозитарного счёта" ADD CONSTRAINT "Unique_Identifier19" PRIMARY KEY ("ID баланса депозитарного счёта","ID депозитарного счёта","ID пользователя");
 
 -- Table Список ценных бумаг
 
@@ -186,15 +176,9 @@ CREATE TABLE "Список ценных бумаг"
   "Выплата дивидендов" Boolean NOT NULL,
   "ID валюты" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-CREATE INDEX "IX_Relationship51" ON "Список ценных бумаг" ("ID валюты")
-;
-
-ALTER TABLE "Список ценных бумаг" ADD CONSTRAINT "Unique_Identifier5" PRIMARY KEY ("ID ценной бумаги")
-;
+WITH (autovacuum_enabled=true);
+CREATE INDEX "IX_Relationship51" ON "Список ценных бумаг" ("ID валюты");
+ALTER TABLE "Список ценных бумаг" ADD CONSTRAINT "Unique_Identifier5" PRIMARY KEY ("ID ценной бумаги");
 
 -- Table История операций деп. счёта
 
@@ -211,21 +195,11 @@ CREATE TABLE "История операций деп. счёта"
   "ID брокерского счёта" Integer NOT NULL,
   "ID типа операции деп. счёта" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-CREATE INDEX "IX_Relationship27" ON "История операций деп. счёта" ("ID ценной бумаги")
-;
-
-CREATE INDEX "IX_Relationship28" ON "История операций деп. счёта" ("ID сотрудника")
-;
-
-CREATE INDEX "IX_Relationship35" ON "История операций деп. счёта" ("ID типа операции деп. счёта")
-;
-
-ALTER TABLE "История операций деп. счёта" ADD CONSTRAINT "Unique_Identifier18" PRIMARY KEY ("ID операции деп. счёта","ID депозитарного счёта","ID пользователя","ID операции бр. счёта","ID брокерского счёта")
-;
+WITH (autovacuum_enabled=true);
+CREATE INDEX "IX_Relationship27" ON "История операций деп. счёта" ("ID ценной бумаги");
+CREATE INDEX "IX_Relationship28" ON "История операций деп. счёта" ("ID сотрудника");
+CREATE INDEX "IX_Relationship35" ON "История операций деп. счёта" ("ID типа операции деп. счёта");
+ALTER TABLE "История операций деп. счёта" ADD CONSTRAINT "Unique_Identifier18" PRIMARY KEY ("ID операции деп. счёта","ID депозитарного счёта","ID пользователя","ID операции бр. счёта","ID брокерского счёта");
 
 -- Table Тип операции депозитарного счёта
 
@@ -234,12 +208,8 @@ CREATE TABLE "Тип операции депозитарного счёта"
   "ID типа операции деп. счёта" Serial NOT NULL,
   "Тип" Character varying(15) NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-ALTER TABLE "Тип операции депозитарного счёта" ADD CONSTRAINT "Unique_Identifier1" PRIMARY KEY ("ID типа операции деп. счёта")
-;
+WITH (autovacuum_enabled=true);
+ALTER TABLE "Тип операции депозитарного счёта" ADD CONSTRAINT "Unique_Identifier1" PRIMARY KEY ("ID типа операции деп. счёта");
 
 -- Table Брокерский счёт
 
@@ -253,21 +223,11 @@ CREATE TABLE "Брокерский счёт"
   "ID пользователя" Integer NOT NULL,
   "ID валюты" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-CREATE INDEX "IX_Relationship22" ON "Брокерский счёт" ("ID банка")
-;
-
-CREATE INDEX "IX_Relationship25" ON "Брокерский счёт" ("ID валюты")
-;
-
-CREATE INDEX "IX_Relationship52" ON "Брокерский счёт" ("ID пользователя")
-;
-
-ALTER TABLE "Брокерский счёт" ADD CONSTRAINT "Unique_Identifier12" PRIMARY KEY ("ID брокерского счёта")
-;
+WITH (autovacuum_enabled=true);
+CREATE INDEX "IX_Relationship22" ON "Брокерский счёт" ("ID банка");
+CREATE INDEX "IX_Relationship25" ON "Брокерский счёт" ("ID валюты");
+CREATE INDEX "IX_Relationship52" ON "Брокерский счёт" ("ID пользователя");
+ALTER TABLE "Брокерский счёт" ADD CONSTRAINT "Unique_Identifier12" PRIMARY KEY ("ID брокерского счёта");
 
 -- Table История операций бр. счёта
 
@@ -293,7 +253,6 @@ CREATE TABLE "Тип операции брокерского счёта"
   "Тип" Character varying(15) NOT NULL
 )
 WITH (autovacuum_enabled=true);
-
 ALTER TABLE "Тип операции брокерского счёта" ADD CONSTRAINT "Unique_Identifier2" PRIMARY KEY ("ID типа операции бр. счёта");
 
 -- Table Дивиденды
@@ -407,8 +366,21 @@ CREATE TABLE currency_rate (
     UNIQUE (base_currency_id, target_currency_id, rate_date) -- Один курс на пару в день
 );
 
+CREATE TABLE "Статус блока пользователя" (
+	"ID статуса блокировки" Serial PRIMARY KEY,
+	"Статус" VARCHAR(30) NOT NULL
+)
+WITH (autovacuum_enabled=true);
 
 -- Create foreign keys (relationships) section -------------------------------------------------
+
+ALTER TABLE "Пользователь"
+ADD CONSTRAINT "Relationship55"
+FOREIGN KEY ("ID статуса блокировки")
+REFERENCES "Статус блока пользователя"("ID статуса блокировки")
+ON DELETE RESTRICT
+ON UPDATE RESTRICT;
+
 
 ALTER TABLE "Пользователь"
   ADD CONSTRAINT "Relationship4"
@@ -612,7 +584,8 @@ INSERT INTO "Статус верификации"("Статус верифика
 VALUES
 ('Не подтверждён'),
 ('Подтверждён'),
-('Ожидает верификации');
+('Ожидает верификации'),
+('Заблокирован');
 
 INSERT INTO "Статус трудоустройства"("Статус трудоустройства")
 VALUES
@@ -712,6 +685,11 @@ INSERT INTO "Тип предложения"("Тип")
 VALUES
 ('Покупка'),
 ('Продажа');
+
+INSERT INTO "Статус блока пользователя"("Статус")
+VALUES
+('Не заблокирован'),
+('Заблокирован');
 
 
 -- =========================
@@ -2153,8 +2131,8 @@ BEGIN
     -- 1. СОЗДАЁМ ПЕРВОГО ПОЛЬЗОВАТЕЛЯ: u1@test.com / user1
     --------------------------------------------------------
     INSERT INTO "Пользователь"
-    ("Электронная почта", "Дата регистрации", "Логин", "Пароль", "ID статуса верификации")
-    VALUES ('u1@test.com', NOW(), 'user1', 'pass', 1)
+    ("Электронная почта", "Дата регистрации", "Логин", "Пароль", "ID статуса верификации", "ID статуса блокировки")
+    VALUES ('u1@test.com', NOW(), 'user1', 'pass', 1, 1)
     RETURNING "ID пользователя" INTO uid1;
 
     RAISE NOTICE 'Создан пользователь 1 (логин: user1), ID = %', uid1;
@@ -2163,13 +2141,14 @@ BEGIN
     -- 2. СОЗДАЁМ ВТОРОГО ПОЛЬЗОВАТЕЛЯ: 1@f.com / 1
     --------------------------------------------------------
     INSERT INTO "Пользователь"
-    ("Электронная почта", "Дата регистрации", "Логин", "Пароль", "ID статуса верификации")
+    ("Электронная почта", "Дата регистрации", "Логин", "Пароль", "ID статуса верификации", "ID статуса блокировки")
     VALUES (
         '1@f.com',
         '2025-12-13'::DATE,
         '1',
         '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO',
-        1
+        1,
+		1
     )
     RETURNING "ID пользователя" INTO uid2;
 

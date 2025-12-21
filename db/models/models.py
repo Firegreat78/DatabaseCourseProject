@@ -16,6 +16,16 @@ class Base(DeclarativeBase):
     registry = reg
 
 
+class UserRestrictionStatus(Base):
+    __tablename__ = "Статус блока пользователя"
+
+    id = Column("ID статуса блокировки", Integer, primary_key=True, nullable=False, autoincrement=True)
+    status = Column("Статус", String(30), nullable=False)
+
+    def __repr__(self):
+        return f"<UserRestrictionStatus(id={self.id}, status={self.status})>"
+
+
 class ProposalStatus(Base):
     __tablename__ = "Статус предложения"
 
@@ -126,8 +136,10 @@ class User(Base):
     login = Column("Логин", String(30), nullable=False)
     password = Column("Пароль", String(60), nullable=False)
     verification_status_id = Column("ID статуса верификации", Integer, ForeignKey("Статус верификации.ID статуса верификации", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
+    block_status_id = Column("ID статуса блокировки", Integer, ForeignKey("Статус блока пользователя.ID статуса блокировки", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
 
     verification_status = relationship("VerificationStatus", backref="users")
+    block_status = relationship("UserRestrictionStatus", backref="users")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', login='{self.login}', verification_status_id={self.verification_status_id})>"
