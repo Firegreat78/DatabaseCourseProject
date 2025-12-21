@@ -307,7 +307,8 @@ async def register_user(
         password=hashed_password,
         email=form_data.email,
         registration_date=datetime.now(timezone.utc).date(),
-        verification_status_id=3,  #
+        verification_status_id=3,
+        block_status_id=1,
     )
 
     db.add(new_user)
@@ -749,7 +750,7 @@ async def get_user_passport(
 class UserVerificationUpdate(BaseModel):
     verification_status_id: int
 
-@app.put("/api/user/{user_id}")
+@app.put("/api/user/{user_id}") # todo: add depositary balance on user verify
 async def update_user_verification_status(
     user_id: int,
     data: UserVerificationUpdate,
