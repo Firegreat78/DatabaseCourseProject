@@ -9,9 +9,11 @@ from sqlalchemy.orm import selectinload, joinedload
 from db.session import get_db
 from core.config import PORT, HOST
 from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, get_current_user
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, ConfigDict, Field
 from decimal import Decimal
 from typing import Optional
+from datetime import datetime, date
+import re
 
 
 from routers.routers import brokerage_accounts_router
@@ -126,18 +128,87 @@ class UserRegisterRequest(BaseModel):
             raise ValueError("Пароль должен содержать минимум 6 символов")
         return v
 
+NAME_REGEX = re.compile(r"^[А-Яа-яA-Za-z\- ]+$")
+
 class PassportCreateRequest(BaseModel):
-    lastName: str
-    firstName: str
-    middleName: str
-    series: str
-    number: str
+    model_config = ConfigDict(extra="forbid")
+
+    lastName: str = Field(..., min_length=2, max_length=50)
+    firstName: str = Field(..., min_length=2, max_length=50)
+    middleName: str = Field(..., min_length=2, max_length=50)
+
+    series: str = Field(..., min_length=4, max_length=4)
+    number: str = Field(..., min_length=6, max_length=6)
+
     gender: str
+
     birthDate: datetime
-    birthPlace: str
-    registrationPlace: str
     issueDate: datetime
-    issuedBy: str
+
+    birthPlace: str = Field(..., min_length=3, max_length=100)
+    registrationPlace: str = Field(..., min_length=5, max_length=150)
+    issuedBy: str = Field(..., min_length=5, max_length=150)
+
+    # ===== ВАЛИДАТОРЫ =====
+
+    @field_validator("lastName", "firstName", "middleName")
+    @classmethod
+    def validate_names(cls, v: str):
+        if not NAME_REGEX.match(v):
+            raise ValueError("ФИО может содержать только буквы, пробелы и дефисы")
+        return v.strip()
+
+    @field_validator("series")
+    @classmethod
+    def validate_series(cls, v: str):
+        if not v.isdigit():
+            raise ValueError("Серия паспорта должна содержать только цифры")
+        return v
+
+    @field_validator("number")
+    @classmethod
+    def validate_number(cls, v: str):
+        if not v.isdigit():
+            raise ValueError("Номер паспорта должен содержать только цифры")
+        return v
+
+    @field_validator("gender")
+    @classmethod
+    def validate_gender(cls, v: str):
+        if v not in ("м", "ж"):
+            raise ValueError("Пол должен быть 'м' или 'ж'")
+        return v
+
+    @field_validator("birthDate")
+    @classmethod
+    def validate_birth_date(cls, v: datetime):
+        today = date.today()
+        birth = v.date()
+
+        age = today.year - birth.year - (
+            (today.month, today.day) < (birth.month, birth.day)
+        )
+
+        if birth > today:
+            raise ValueError("Дата рождения не может быть в будущем")
+        if age < 14:
+            raise ValueError("Возраст должен быть не менее 14 лет")
+
+        return v
+
+    @field_validator("issueDate")
+    @classmethod
+    def validate_issue_date(cls, v: datetime, info):
+        today = date.today()
+
+        if v.date() > today:
+            raise ValueError("Дата выдачи не может быть в будущем")
+
+        birth_date = info.data.get("birthDate")
+        if birth_date and v.date() <= birth_date.date():
+            raise ValueError("Дата выдачи должна быть позже даты рождения")
+
+        return v
 
 class ProposalCreateRequest(BaseModel):
     security_id: int
