@@ -1,6 +1,6 @@
 import uvicorn
 from datetime import timezone, datetime
-from fastapi import FastAPI, Depends, HTTPException, status, Path
+from fastapi import FastAPI, Depends, HTTPException, status, Path, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -746,6 +746,25 @@ async def get_user_passport(
         "registration_place": passport.registration_place,
     }
 
+@app.delete("/api/user/{user_id}/passport", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_passport(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # проверка роли
+):
+
+    result = await db.execute(
+        select(Passport).where(Passport.user_id == user_id, Passport.is_actual == True)
+    )
+    passport = result.scalar_one_or_none()
+
+    if not passport:
+        raise HTTPException(status_code=404, detail="Паспорт не найден")
+
+    await db.delete(passport)
+    await db.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 class UserVerificationUpdate(BaseModel):
     verification_status_id: int
