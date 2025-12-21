@@ -74,7 +74,6 @@ TABLES = {
     "currency_rate": CurrencyRate
 }
 
-
 @app.get("/api/{table_name}")
 async def get_table_data(table_name: str, db: AsyncSession = Depends(get_db)):
     model = TABLES.get(table_name)
@@ -91,7 +90,6 @@ async def get_table_data(table_name: str, db: AsyncSession = Depends(get_db)):
     ]
     return data
 
-
 @app.get("/ping-db")
 async def ping_db(db: AsyncSession = Depends(get_db)):
     try:
@@ -99,8 +97,6 @@ async def ping_db(db: AsyncSession = Depends(get_db)):
         return {"connected": True, "result": result.scalar()}
     except Exception as e:
         return {"connected": False, "error": str(e)}
-
-
 
 class LoginRequest(BaseModel):
     login: str
@@ -184,7 +180,6 @@ async def login_user(
         "role": "user"
     }
 
-
 @app.post("/api/login/staff", response_model=Token, summary="Вход сотрудника")
 async def login_staff(
     form_data: LoginRequest,  # Исправлено: form_data: LoginRequest
@@ -208,7 +203,6 @@ async def login_staff(
         "user_id": staff.id,  # Добавляем user_id (используем staff.id)
         "role": staff.rights_level       # Добавляем role
     }
-
 
 @app.post("/api/register/user", status_code=status.HTTP_201_CREATED, summary="Регистрация пользователя")
 async def register_user(
@@ -279,7 +273,6 @@ async def get_user_balance(
     except Exception as e:
         print(f"Ошибка расчёта баланса: {e}")
         raise HTTPException(status_code=500, detail="Ошибка сервера")
-
 
 @app.get("/api/currency/usd-rate")
 async def get_usd_rate(
@@ -400,7 +393,6 @@ async def get_proposal_detail(
         "created_at": getattr(proposal, "created_at", None)
     }
 
-
 @app.get("/api/securities")
 async def get_securities(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
@@ -435,10 +427,6 @@ async def get_proposal_types(db: AsyncSession = Depends(get_db)):
         {"id": t.id, "type": t.type}
         for t in types
     ]
-
-
-
-
 
 @app.get("/api/user/{user_id}")
 async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
@@ -828,7 +816,6 @@ async def create_stock(
         "message": "Акция добавлена",
         "id": security.id,
     }
-
 
 def run():
     # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
