@@ -352,46 +352,74 @@ async def create_passport(
         "user_id": passport.user_id
     }
 
-@app.get("/api/proposal/{proposal_id}")
-async def get_proposal_detail(
-    proposal_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # проверка токена
+class ProposalAction(BaseModel):
+    action: str  # "approve" или "reject"
+
+
+@app.patch("/api/proposal/{proposal_id}")
+async def handle_proposal_action(
+        proposal_id: int,
+        data: ProposalAction,
+        db: AsyncSession = Depends(get_db),
+        current_user: dict = Depends(get_current_user),
 ):
-    result = await db.execute(select(Proposal).where(Proposal.id == proposal_id))
+    """
+    Обработка заявки брокером: принятие или отклонение.
+    Доступно только для пользователей с ролью "broker" или "admin".
+    """
+    # Проверка роли - права брокера и админа в rights_level: "3" - брокер, "2" - админ
+    print(f"Current user data: {current_user}")  # Добавьте для отладки
+    if current_user.get("role") not in ("3", "2", "1"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Доступ запрещён. Ваша роль: {current_user.get('role')}"
+        )
+
+    # Получаем заявку
+    result = await db.execute(
+        select(Proposal)
+        .where(Proposal.id == proposal_id)
+    )
     proposal = result.scalar_one_or_none()
+
     if not proposal:
         raise HTTPException(status_code=404, detail="Предложение не найдено")
 
-    # Проверка прав доступа
-    if current_user["role"] != "admin" and proposal.user.id != current_user.get("id"):
-        raise HTTPException(status_code=403, detail="Доступ запрещён")
+    # Проверка текущего статуса — можно обрабатывать только новые заявки (status_id = 3)
+    if proposal.status_id != 3:  # 3 = "Ожидает верификации"
+        raise HTTPException(status_code=400, detail="Заявка уже обработана")
 
-    passports = [
-        {k: v for k, v in p.__dict__.items() if k != "_sa_instance_state"}
-        for p in proposal.user.passports
-    ]
+    # Получаем ID сотрудника из current_user
+    staff_id = current_user.get("staff_id") or current_user.get("id")
+
+    if not staff_id:
+        raise HTTPException(status_code=400, detail="Не удалось определить сотрудника")
+
+    # Применяем действие
+    if data.action == "approve":
+        try:
+            query = text("SELECT process_proposal(:staff_id, :proposal_id, TRUE)")
+            await db.execute(query, {"staff_id": staff_id, "proposal_id": proposal_id})
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(status_code=500, detail=f"Ошибка при обработке заявки: {str(e)}")
+    elif data.action == "reject":
+        try:
+            query = text("SELECT process_proposal(:staff_id, :proposal_id, FALSE)")
+            await db.execute(query, {"staff_id": staff_id, "proposal_id": proposal_id})
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(status_code=500, detail=f"Ошибка при обработке заявки: {str(e)}")
+    else:
+        raise HTTPException(status_code=400, detail="Неверное действие. Допустимы: 'approve' или 'reject'")
 
     return {
-        "id": proposal.id,
-        "amount": float(proposal.amount),
-        "proposal_type": {
-            "id": proposal.proposal_type.id,
-            "type": proposal.proposal_type.type
-        },
-        "security": {
-            "id": proposal.security.id,
-            "name": proposal.security.name
-        },
-        "user": {
-            "id": proposal.user.id,
-            "login": proposal.user.login,
-            "email": proposal.user.email,
-            "verification_status_id": proposal.user.verification_status_id,
-            "passports": passports
-        },
-        "created_at": getattr(proposal, "created_at", None)
+        "detail": f"Заявка успешно {'принята' if data.action == 'approve' else 'отклонена'}",
+        "proposal_id": proposal_id
     }
+
 
 @app.get("/api/securities")
 async def get_securities(db: AsyncSession = Depends(get_db)):
