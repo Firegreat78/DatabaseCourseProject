@@ -307,7 +307,7 @@ async def register_user(
         password=hashed_password,
         email=form_data.email,
         registration_date=datetime.now(timezone.utc).date(),
-        verification_status_id=3,
+        verification_status_id=1,
         block_status_id=1,
     )
 
@@ -396,6 +396,7 @@ async def create_passport(
             detail="Паспорт уже привязан к пользователю"
         )
 
+
     passport = Passport(
         user_id=user_id,
         last_name=form_data.lastName,
@@ -413,6 +414,14 @@ async def create_passport(
     )
 
     db.add(passport)
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+
+    user.verification_status_id = 3  # статус "Ожидает верификации"
+
     await db.commit()
     await db.refresh(passport)
 
@@ -750,7 +759,6 @@ async def get_user_passport(
 async def delete_user_passport(
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # проверка роли
 ):
 
     result = await db.execute(
