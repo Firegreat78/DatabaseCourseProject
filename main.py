@@ -749,7 +749,7 @@ async def get_user_passport(
 class UserVerificationUpdate(BaseModel):
     verification_status_id: int
 
-@app.put("/api/user/{user_id}")
+@app.put("/api/user/verify/{user_id}")
 async def update_user_verification_status(
     user_id: int,
     data: UserVerificationUpdate,
@@ -963,6 +963,97 @@ async def process_proposal(
             status_code=status_code,
             detail=error_msg if status_code != 500 else "Внутренняя ошибка сервера при обработке заявки"
         )
+    
+class UserUpdate(BaseModel):
+    login: Optional[str] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+    verification_status_id: Optional[int] = None
+    block_status_id: Optional[int] = None
+    
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            if len(v.encode("utf-8")) > 72:
+                raise ValueError("Пароль слишком длинный (максимум ~70 символов)")
+            if len(v) < 6:
+                raise ValueError("Пароль должен содержать минимум 6 символов")
+        return v
+
+# Добавьте этот эндпоинт для обновления пользователя (можно разместить после GET /api/user/{user_id})
+@app.put("/api/user/{user_id}")
+async def update_user(
+    user_id: int,
+    data: UserUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    # Получаем пользователя
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+
+    # Проверка логина, если передан и изменился
+    if data.login is not None and data.login != user.login:
+        existing_login = await db.execute(select(User).where(User.login == data.login, User.id != user_id))
+        if existing_login.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Логин уже занят")
+
+    # Проверка email, если передан и изменился
+    if data.email is not None and data.email != user.email:
+        existing_email = await db.execute(select(User).where(User.email == data.email, User.id != user_id))
+        if existing_email.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email уже зарегистрирован")
+
+    # Проверяем статусы, если переданы
+    if data.verification_status_id is not None:
+        # Проверяем существование статуса
+        result = await db.execute(select(VerificationStatus).where(VerificationStatus.id == data.verification_status_id))
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный статус верификации")
+
+    if data.block_status_id is not None:
+        result = await db.execute(select(UserRestrictionStatus).where(UserRestrictionStatus.id == data.block_status_id))
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный статус блокировки")
+
+    # Обновляем поля, которые переданы (не None)
+    update_data = {}
+    if data.login is not None:
+        user.login = data.login
+        update_data['login'] = data.login
+
+    if data.email is not None:
+        user.email = data.email
+        update_data['email'] = data.email
+
+    if data.password is not None and data.password != "":
+        user.password = get_password_hash(data.password)
+        update_data['password_updated'] = True
+
+    if data.verification_status_id is not None:
+        user.verification_status_id = data.verification_status_id
+        update_data['verification_status_id'] = data.verification_status_id
+
+    if data.block_status_id is not None:
+        user.block_status_id = data.block_status_id
+        update_data['block_status_id'] = data.block_status_id
+
+    await db.commit()
+    await db.refresh(user)
+
+    return {
+        "id": user.id,
+        "login": user.login,
+        "email": user.email,
+        "verification_status_id": user.verification_status_id,
+        "block_status_id": user.block_status_id,
+        "registration_date": user.registration_date,
+        "message": "Пользователь успешно обновлён"
+    }
+
 
 def run():
     # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
