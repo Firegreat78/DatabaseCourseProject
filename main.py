@@ -17,7 +17,7 @@ from datetime import datetime, date
 import re
 import logging
 
-from routers.routers import brokerage_accounts_router
+from routers.routers import brokerage_accounts_router, charts_router
 
 from db.models.models import (
     Bank,
@@ -45,6 +45,7 @@ from db.models.models import (
 
 app = FastAPI()
 app.include_router(brokerage_accounts_router)
+app.include_router(charts_router)
 
 # Разрешаем React dev сервер
 app.add_middleware(
