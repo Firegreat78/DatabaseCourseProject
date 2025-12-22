@@ -2,8 +2,9 @@ import uvicorn
 from datetime import timezone, datetime
 from fastapi import FastAPI, Depends, HTTPException, status, Path, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import text, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError, DBAPIError
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload, joinedload
 from db.session import get_db
@@ -14,6 +15,7 @@ from decimal import Decimal
 from typing import Optional, Union
 from datetime import datetime, date
 import re
+import logging
 
 from routers.routers import brokerage_accounts_router
 
@@ -76,6 +78,7 @@ TABLES = {
     "currency_rate": CurrencyRate
 }
 
+logger = logging.getLogger(__name__)
 
 @app.get("/api/{table_name}")
 async def get_table_data(table_name: str, db: AsyncSession = Depends(get_db)):
@@ -743,7 +746,7 @@ async def register_staff(
         form_data: StaffCreate,
         db: AsyncSession = Depends(get_db)
 ):
-    # 1. Проверяем логин
+    # 1. Проверяем логин и номер договора
     result_login = await db.execute(
         select(Staff).where(Staff.login == form_data.login)
     )
@@ -751,6 +754,15 @@ async def register_staff(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Логин уже занят"
+        )
+    
+    result_number = await db.execute(
+        select(Staff).where(Staff.contract_number == form_data.contract_number)
+    )
+    if result_number.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Номер договора уже занят"
         )
 
     # 2. Хэшируем пароль
@@ -931,56 +943,106 @@ class StockOut(BaseModel):
 
 class StockCreate(BaseModel):
     ticker: str
+    isin: str
+    lot_size: int
     price: Decimal
-    currency: str
+    currency_id: int
+    has_dividends: bool = False
+
+    @field_validator("ticker")
+    @classmethod
+    def validate_ticker(cls, v: str):
+        v = v.strip()
+        if not v:
+            raise ValueError("Тикер не может быть пустым")
+        return v
+
+    @field_validator("isin")
+    @classmethod
+    def validate_isin(cls, v: str):
+        v = v.strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}[0-9]", v):
+            raise ValueError("Некорректный формат ISIN")
+        return v
+
+    @field_validator("lot_size")
+    @classmethod
+    def validate_lot_size(cls, v: int):
+        if v <= 0:
+            raise ValueError("Размер лота должен быть больше 0")
+        return v
+
+    @field_validator("price")
+    @classmethod
+    def validate_price(cls, v: Decimal):
+        if v <= 0:
+            raise ValueError("Цена должна быть положительной")
+        return v
 
 
-@app.post("/api/exchange/stocks", status_code=status.HTTP_201_CREATED)
+@app.post("/api/exchange/stocks", status_code=201)
 async def create_stock(
-        data: StockCreate,
-        db: AsyncSession = Depends(get_db),
+    data: StockCreate,
+    db: AsyncSession = Depends(get_db),
 ):
-    # Проверяем валюту
-    result = await db.execute(
-        select(Currency).where(Currency.code == data.currency)
+    currency = await db.scalar(
+        select(Currency).where(Currency.id == data.currency_id)
     )
-    currency = result.scalar_one_or_none()
-
     if not currency:
-        raise HTTPException(
-            status_code=400,
-            detail="Валюта не найдена",
-        )
+        raise HTTPException(404, "Валюта не найдена")
 
-    # Проверяем, существует ли акция
-    result = await db.execute(
-        select(Security).where(Security.isin == data.ticker)
-    )
-    exists = result.scalar_one_or_none()
-
-    if exists:
-        raise HTTPException(
-            status_code=400,
-            detail="Акция с таким тикером уже существует",
-        )
-
-    # Создаём акцию
     security = Security(
         name=data.ticker,
-        isin=data.ticker,
-        lot_size=Decimal("1.00"),
-        dividend_payment=False,
-        currency_id=currency.id,
+        isin=data.isin,
+        lot_size=Decimal(data.lot_size),
+        dividend_payment=data.has_dividends,
+        currency_id=data.currency_id,
     )
+
     db.add(security)
-    await db.commit()
-    await db.refresh(security)
+
+    try:
+        # Flush = executes INSERT
+        await db.flush()
+
+        price = PriceHistory(
+            security_id=security.id,
+            date=date.today(),
+            price=data.price,
+        )
+        db.add(price)
+
+        await db.commit()
+
+    except IntegrityError as e:
+        await db.rollback()
+        msg = str(e.orig)
+
+        logger.warning("IntegrityError while creating stock: %s", msg)
+
+        if "uq_security_isin" in msg:
+            raise HTTPException(400, "ISIN уже существует")
+
+        if "uq_security_name" in msg:
+            raise HTTPException(400, "Тикер уже существует")
+
+        raise HTTPException(400, "Нарушение уникальности данных")
+
+    except DBAPIError as e:
+        await db.rollback()
+        logger.exception("Database error")
+        raise HTTPException(500, "Ошибка базы данных")
+
+    except Exception as e:
+        await db.rollback()
+        logger.exception("Unexpected error")
+        raise HTTPException(500, "Внутренняя ошибка сервера")
 
     return {
-        "message": "Акция добавлена",
         "id": security.id,
+        "ticker": security.name,
+        "isin": security.isin,
     }
-
 
 class ProcessProposalRequest(BaseModel):
     verify: bool
@@ -1187,8 +1249,6 @@ class UserUpdate(BaseModel):
     @classmethod
     def validate_password(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
-            if len(v.encode("utf-8")) > 72:
-                raise ValueError("Пароль слишком длинный (максимум ~70 символов)")
             if len(v) < 6:
                 raise ValueError("Пароль должен содержать минимум 6 символов")
         return v
@@ -1207,17 +1267,27 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
 
-    # Проверка логина, если передан и изменился
-    if data.login is not None and data.login != user.login:
-        existing_login = await db.execute(select(User).where(User.login == data.login, User.id != user_id))
+    # Проверка логина, если передан, не пустой и изменился
+    if data.login is not None and data.login.strip() != "" and data.login != user.login:
+        existing_login = await db.execute(
+            select(User).where(User.login == data.login, User.id != user_id)
+        )
         if existing_login.scalar_one_or_none():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Логин уже занят")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Логин уже занят"
+            )
 
-    # Проверка email, если передан и изменился
-    if data.email is not None and data.email != user.email:
-        existing_email = await db.execute(select(User).where(User.email == data.email, User.id != user_id))
+    # Проверка email, если передан, не пустой и изменился
+    if data.email is not None and data.email.strip() != "" and data.email != user.email:
+        existing_email = await db.execute(
+            select(User).where(User.email == data.email, User.id != user_id)
+        )
         if existing_email.scalar_one_or_none():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email уже зарегистрирован")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email уже зарегистрирован"
+            )
 
     # Проверяем статусы, если переданы
     if data.verification_status_id is not None:
@@ -1233,26 +1303,22 @@ async def update_user(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный статус блокировки")
 
     # Обновляем поля, которые переданы (не None)
-    update_data = {}
-    if data.login is not None:
+    # Логин обновляем только если передан и не пустой
+    if data.login is not None and data.login.strip() != "":
         user.login = data.login
-        update_data['login'] = data.login
 
-    if data.email is not None:
+    # Email обновляем только если передан и не пустой
+    if data.email is not None and data.email.strip() != "":
         user.email = data.email
-        update_data['email'] = data.email
 
-    if data.password is not None and data.password != "":
+    if data.password is not None and data.password.strip() != "":
         user.password = get_password_hash(data.password)
-        update_data['password_updated'] = True
 
     if data.verification_status_id is not None:
         user.verification_status_id = data.verification_status_id
-        update_data['verification_status_id'] = data.verification_status_id
 
     if data.block_status_id is not None:
         user.block_status_id = data.block_status_id
-        update_data['block_status_id'] = data.block_status_id
 
     await db.commit()
     await db.refresh(user)
@@ -1302,6 +1368,33 @@ async def call_verify_user_passport(
         raise HTTPException(status_code=400, detail=str(e))
 
     return {"message": "Функция verify_user_passport успешно выполнена"}
+    
+@app.get("/api/exchange/stocks")
+async def get_stocks(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(
+            Security.id,
+            Security.name,
+            Security.isin,
+            PriceHistory.price,
+            Currency.code
+        )
+        .join(PriceHistory, PriceHistory.security_id == Security.id)
+        .join(Currency, Currency.id == Security.currency_id)
+        .order_by(Security.name)
+    )
+
+    return [
+        {
+            "id": row.id,
+            "ticker": row.name,
+            "isin": row.isin,
+            "price": float(row.price),
+            "currency": row.code,
+            "change": 0.0,  # placeholder
+        }
+        for row in result
+    ]
 
 
 def run():
