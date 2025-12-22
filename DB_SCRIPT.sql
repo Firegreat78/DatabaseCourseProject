@@ -44,6 +44,36 @@ Model: PhysicalModel
 Database: PostgreSQL 12
 */
 
+CREATE OR REPLACE FUNCTION prevent_negative_balance()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    amount_value NUMERIC(12,2);
+    account_id   TEXT := 'неизвестно';
+BEGIN
+    -- Определяем значение суммы (может называться "Баланс" или "Сумма")
+    IF TG_TABLE_NAME = 'Брокерский счёт' THEN
+        amount_value := NEW."Баланс";
+        account_id   := COALESCE(NEW."ID брокерского счёта"::text, 'новый');
+    ELSIF TG_TABLE_NAME = 'Баланс депозитарного счёта' THEN
+        amount_value := NEW."Сумма";
+        account_id   := COALESCE(NEW."ID баланса депозитарного счёта"::text, 'новый');
+    ELSE
+        RAISE EXCEPTION 'Триггер вызван на неподдерживаемой таблице %', TG_TABLE_NAME;
+    END IF;
+
+    IF amount_value < 0 THEN
+        RAISE EXCEPTION 'Сумма не может быть отрицательной! Попытка установить значение % (таблица: %, ID: %)'
+            , amount_value
+            , TG_TABLE_NAME
+            , account_id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
 -- Create tables section -------------------------------------------------
 
 -- Table Паспорт
@@ -77,9 +107,9 @@ ALTER TABLE "Паспорт" ADD CONSTRAINT "Unique_Identifier16" PRIMARY KEY ("
 CREATE TABLE "Пользователь"
 (
   "ID пользователя" Serial NOT NULL,
-  "Электронная почта" Character varying(40) NOT NULL,
+  "Электронная почта" Character varying(40) NOT NULL UNIQUE,
   "Дата регистрации" Date NOT NULL,
-  "Логин" Character varying(30) NOT NULL,
+  "Логин" Character varying(30) NOT NULL UNIQUE,
   "Пароль" Character varying(60) NOT NULL,
   "ID статуса верификации" Integer NOT NULL,
   "ID статуса блокировки" Integer NOT NULL
@@ -104,8 +134,8 @@ ALTER TABLE "Статус верификации" ADD CONSTRAINT "Unique_Identif
 CREATE TABLE "Персонал"
 (
   "ID сотрудника" Serial NOT NULL,
-  "Номер трудового договора" Character varying(40) NOT NULL,
-  "Логин" Character varying(30) NOT NULL,
+  "Номер трудового договора" Character varying(40) NOT NULL UNIQUE,
+  "Логин" Character varying(30) NOT NULL UNIQUE,
   "Пароль" Character varying(60) NOT NULL,
   "Уровень прав" Character varying(30) NOT NULL,
   "ID статуса трудоустройства" Integer NOT NULL
@@ -161,14 +191,21 @@ WITH (autovacuum_enabled=true);
 CREATE INDEX "IX_Relationship17" ON "Баланс депозитарного счёта" ("ID ценной бумаги");
 ALTER TABLE "Баланс депозитарного счёта" ADD CONSTRAINT "Unique_Identifier19" PRIMARY KEY ("ID баланса депозитарного счёта","ID депозитарного счёта","ID пользователя");
 
+
+CREATE TRIGGER trg_prevent_negative_depo_balance
+    BEFORE INSERT OR UPDATE OF "Сумма"
+    ON public."Баланс депозитарного счёта"
+    FOR EACH ROW
+    EXECUTE FUNCTION prevent_negative_balance();
+
 -- Table Список ценных бумаг
 
 CREATE TABLE "Список ценных бумаг"
 (
   "ID ценной бумаги" Serial NOT NULL,
-  "Наименование" Character varying(120) NOT NULL,
+  "Наименование" Character varying(120) NOT NULL UNIQUE,
   "Размер лота" Numeric(12,2) NOT NULL,
-  "ISIN" Character varying(40) NOT NULL,
+  "ISIN" Character varying(40) NOT NULL UNIQUE,
   "Выплата дивидендов" Boolean NOT NULL,
   "ID валюты" Integer NOT NULL
 )
@@ -224,6 +261,14 @@ CREATE INDEX "IX_Relationship22" ON "Брокерский счёт" ("ID бан�
 CREATE INDEX "IX_Relationship25" ON "Брокерский счёт" ("ID валюты");
 CREATE INDEX "IX_Relationship52" ON "Брокерский счёт" ("ID пользователя");
 ALTER TABLE "Брокерский счёт" ADD CONSTRAINT "Unique_Identifier12" PRIMARY KEY ("ID брокерского счёта");
+
+-- Сам триггер на таблицу "Брокерский счёт"
+CREATE TRIGGER trg_prevent_negative_balance
+    BEFORE INSERT OR UPDATE OF "Баланс"
+    ON public."Брокерский счёт"
+    FOR EACH ROW
+    EXECUTE FUNCTION prevent_negative_balance();
+
 
 -- Table История операций бр. счёта
 
@@ -353,13 +398,10 @@ ALTER TABLE "История цены" ADD CONSTRAINT "Unique_Identifier15" PRIMA
 
 CREATE TABLE currency_rate (
     id SERIAL PRIMARY KEY,
-    base_currency_id INT NOT NULL,
-    target_currency_id INT NOT NULL,
+    currency_id INT NOT NULL,
     rate NUMERIC(20, 8) NOT NULL,
     rate_date DATE NOT NULL DEFAULT CURRENT_DATE,
-    rate_time TIMESTAMPTZ(6) DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (base_currency_id, target_currency_id, rate_date) -- Один курс на пару в день
+    UNIQUE (currency_id, rate_date) -- Один курс на пару в день
 );
 
 CREATE TABLE "Статус блока пользователя" (
@@ -563,14 +605,7 @@ ALTER TABLE "Брокерский счёт"
 
 ALTER TABLE currency_rate
 ADD CONSTRAINT "Relationship53"
-    FOREIGN KEY (base_currency_id)
-    REFERENCES "Список валют"("ID валюты")
-    ON DELETE RESTRICT
-    ON UPDATE RESTRICT;
-
-ALTER TABLE currency_rate
-ADD CONSTRAINT "Relationship54"
-    FOREIGN KEY (target_currency_id)
+    FOREIGN KEY (currency_id)
     REFERENCES "Список валют"("ID валюты")
     ON DELETE RESTRICT
     ON UPDATE RESTRICT;
@@ -602,68 +637,13 @@ INSERT INTO public."Персонал" (
     "ID статуса трудоустройства"
 ) VALUES
 (1,'megaadmin','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO','1',1), --Мега админ
-(2,'admin','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO','2',1),     --Админ
-(3,'broker','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO','3',1),    --Брокер
-(4,'verifier','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO','4',1),  --Верификатор
-(5,'system','','5',1);  --Система
+(2,'system','','5',1);  --Система
 
 
 INSERT INTO "Список валют"("Код", "Символ")
 VALUES
-('RUB', '₽'),
-('USD', '$');
+('RUB', '₽');
 
--- 5. Банки
-INSERT INTO "Банк"("Наименование", "ИНН", "ОГРН", "БИК", "Срок действия лицензии")
-VALUES
-('Сбербанк', '1234567890', '102030405060', '044525225', '2030-12-31');
-
--- 6. Ценные бумаги
-INSERT INTO "Список ценных бумаг"("Наименование", "Размер лота", "ISIN", "Выплата дивидендов", "ID валюты")
-VALUES
-('Газпром', 10, 'RU0007661625', TRUE, 1),
-('Сбербанк', 5, 'RU0009029540', TRUE, 1),
-('Биткоин', 1, 'BTC', FALSE, 2);
-
-INSERT INTO "История цены" ("Дата", "Цена", "ID ценной бумаги")
-VALUES
--- Ценная бумага 1 (например, Сбер)
-('2025-12-04', 288.20, 1),  -- Цена закрытия
-('2025-12-05', 292.50, 1),
-('2025-12-06', 290.80, 1),
-('2025-12-07', 295.10, 1),
-('2025-12-08', 298.40, 1),
-('2025-12-09', 302.70, 1),
-('2025-12-10', 300.50, 1),
-('2025-12-11', 305.80, 1),
-('2025-12-12', 310.20, 1),
-('2025-12-13', 315.60, 1),
-
--- Ценная бумага 2 (например, Газпром)
-('2025-12-04', 147.80, 2),
-('2025-12-05', 150.20, 2),
-('2025-12-06', 148.90, 2),
-('2025-12-07', 152.40, 2),
-('2025-12-08', 155.10, 2),
-('2025-12-09', 158.60, 2),
-('2025-12-10', 156.30, 2),
-('2025-12-11', 160.80, 2),
-('2025-12-12', 164.50, 2),
-('2025-12-13', 168.20, 2),
-
--- Ценная бумага 3 (Биткоин)
-('2025-12-04', 93500.00, 3),
-('2025-12-05', 92800.00, 3),
-('2025-12-06', 91000.00, 3),
-('2025-12-07', 92500.00, 3),
-('2025-12-08', 94000.00, 3),
-('2025-12-09', 93500.00, 3),
-('2025-12-10', 92000.00, 3),
-('2025-12-11', 90500.00, 3),
-('2025-12-12', 89000.00, 3),
-('2025-12-13', 87500.00, 3);
-
--- 7. Типы операций депозитарного счёта
 INSERT INTO "Тип операции депозитарного счёта"("Тип")
 VALUES
 ('Покупка'),
@@ -671,7 +651,6 @@ VALUES
 ('Заморозка ЦБ'),
 ('Разморозка ЦБ');
 
--- 8. Типы операций брокерского счёта
 INSERT INTO "Тип операции брокерского счёта"("Тип")
 VALUES
 ('Пополнение'),
@@ -701,7 +680,7 @@ CREATE OR REPLACE FUNCTION public.change_brokerage_account_balance(
     p_account_id integer,
     p_amount numeric,
     p_brokerage_operation_type integer,  -- Теперь используется как ID типа операции
-    p_staff_id integer DEFAULT 5
+    p_staff_id integer DEFAULT 2
 )
     RETURNS INTEGER
     LANGUAGE 'plpgsql'
@@ -935,99 +914,79 @@ AS $BODY$
     ORDER BY h."Время" DESC;
 $BODY$;
 
--- 2.1 get_currency_rate: вернёт КУРС по ID валюты (курс в рублях за единицу валюты).
+-- Курс CUR1/CUR2
 CREATE OR REPLACE FUNCTION get_currency_rate(
-    p_base_currency_id INTEGER,
-    p_target_currency_id INTEGER
+    p_currency1 INT,
+    p_currency2 INT,
+    p_date DATE DEFAULT CURRENT_DATE
 )
-RETURNS NUMERIC AS $$
+RETURNS NUMERIC(20,8)
+LANGUAGE plpgsql
+AS $$
 DECLARE
-    v_rate NUMERIC;
+    base_id CONSTANT INT := 1;  -- ID рубля РФ
+    rate1 NUMERIC(20,8);        -- курс currency1 к RUB
+    rate2 NUMERIC(20,8);        -- курс currency2 к RUB
+    found_date DATE;
 BEGIN
-    -- Если валюты одинаковые — курс всегда 1
-    IF p_base_currency_id = p_target_currency_id THEN
-        RETURN 1.0;
+    -- Курс для currency1 (RUB → currency1)
+    IF p_currency1 = base_id THEN
+        rate1 := 1.0;
+    ELSE
+        -- Ищем ближайший курс ДО или НА дату
+        SELECT rate, rate_date
+        INTO rate1, found_date
+        FROM currency_rate
+        WHERE currency_id = p_currency1
+          AND rate_date <= p_date
+        ORDER BY rate_date DESC
+        LIMIT 1;
+
+        IF rate1 IS NULL THEN
+            RAISE EXCEPTION 'Нет курса для валюты % ни на %, ни до этой даты',
+                            p_currency1, p_date;
+        END IF;
+
+        -- Для удобства можно вывести предупреждение, если не точная дата
+        IF found_date < p_date THEN
+            RAISE NOTICE 'Для валюты % использован курс на % (ближайший предыдущий)',
+                         p_currency1, found_date;
+        END IF;
     END IF;
 
-    -- Если один из ID NULL — возвращаем NULL
-    IF p_base_currency_id IS NULL OR p_target_currency_id IS NULL THEN
-        RETURN NULL;
+    -- Курс для currency2 (RUB → currency2)
+    IF p_currency2 = base_id THEN
+        rate2 := 1.0;
+    ELSE
+        SELECT rate, rate_date
+        INTO rate2, found_date
+        FROM currency_rate
+        WHERE currency_id = p_currency2
+          AND rate_date <= p_date
+        ORDER BY rate_date DESC
+        LIMIT 1;
+
+        IF rate2 IS NULL THEN
+            RAISE EXCEPTION 'Нет курса для валюты % ни на %, ни до этой даты',
+                            p_currency2, p_date;
+        END IF;
+
+        IF found_date < p_date THEN
+            RAISE NOTICE 'Для валюты % использован курс на % (ближайший предыдущий)',
+                         p_currency2, found_date;
+        END IF;
     END IF;
 
-    -- 1. Прямой курс: сначала на сегодня, потом самый свежий ≤ сегодня
-    SELECT rate INTO v_rate
-    FROM currency_rate
-    WHERE base_currency_id = p_base_currency_id
-      AND target_currency_id = p_target_currency_id
-      AND rate_date <= CURRENT_DATE
-    ORDER BY rate_date DESC
-    LIMIT 1;
-
-    IF v_rate IS NOT NULL THEN
-        RETURN ROUND(v_rate, 8);
-    END IF;
-
-    -- 2. Обратный курс: ищем target → base (самый свежий ≤ сегодня)
-    SELECT rate INTO v_rate
-    FROM currency_rate
-    WHERE base_currency_id = p_target_currency_id
-      AND target_currency_id = p_base_currency_id
-      AND rate_date <= CURRENT_DATE
-    ORDER BY rate_date DESC
-    LIMIT 1;
-
-    IF v_rate IS NOT NULL THEN
-        RETURN ROUND(1.0 / v_rate, 8);
-    END IF;
-
-    -- 3. Если вообще ничего не найдено — возвращаем NULL
-    RETURN NULL;
+    -- currency1 / currency2 = rate2 / rate1
+    RETURN rate2 / rate1;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$;
 
-
+-- Курс p_target_currency_id/RUB
 CREATE OR REPLACE FUNCTION get_currency_rate(p_target_currency_id INT)
 RETURNS NUMERIC AS $$
-    SELECT get_currency_rate(1, p_target_currency_id);  -- 1 = RUB id
+    SELECT get_currency_rate(p_target_currency_id, 1);
 $$ LANGUAGE sql STABLE;
-
-
--- 2.2 convert_amount: конвертирует сумму из currency_from -> currency_to
-CREATE OR REPLACE FUNCTION convert_amount(
-    p_amount NUMERIC,
-    p_from_currency_id INT,   -- ID валюты, ИЗ которой конвертируем
-    p_to_currency_id INT      -- ID валюты, В которую конвертируем
-)
-RETURNS NUMERIC AS $$
-DECLARE
-    v_rate NUMERIC;
-BEGIN
-    -- Если сумма NULL или 0 — возвращаем 0
-    IF p_amount IS NULL OR p_amount = 0 THEN
-        RETURN 0;
-    END IF;
-
-    -- Если валюты не указаны — возвращаем null
-    IF p_from_currency_id IS NULL OR p_to_currency_id IS NULL THEN
-        RETURN NULL;  -- или RETURN 0;
-    END IF;
-
-    -- Если валюты одинаковые — просто возвращаем сумму
-    IF p_from_currency_id = p_to_currency_id THEN
-        RETURN ROUND(p_amount, 8);
-    END IF;
-
-    v_rate := get_currency_rate(p_from_currency_id, p_to_currency_id);
-
-    IF v_rate IS NULL OR v_rate = 0 THEN
-        RAISE NOTICE 'Курс от % к % не найден', p_from_currency_id, p_to_currency_id;
-        RETURN 0;  -- или RAISE EXCEPTION, если хочешь строгую ошибку
-    END IF;
-
-    -- Конвертация: p_amount (в from) * rate (from → to)
-    RETURN ROUND(p_amount * v_rate, 8);
-END;
-$$ LANGUAGE plpgsql STABLE;
 
 
 CREATE OR REPLACE FUNCTION calc_depo_value(
@@ -1994,6 +1953,50 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+
+CREATE OR REPLACE FUNCTION public.get_total_lot_price(
+    p_security_id integer,
+    p_lot_amount integer
+)
+    RETURNS numeric
+    LANGUAGE 'plpgsql'
+    COST 100
+    STABLE PARALLEL UNSAFE
+AS $BODY$
+DECLARE
+    v_price_per_share numeric;   -- цена одной акции в native валюте
+    v_lot_size numeric;          -- размер лота
+    v_total_price numeric;
+BEGIN
+    -- Защита от некорректного количества
+    IF p_lot_amount <= 0 THEN
+        RETURN NULL;
+    END IF;
+
+    -- Последняя цена одной акции
+    v_price_per_share := public.get_security_value_native(p_security_id);
+
+    IF v_price_per_share IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    -- Размер лота из справочника
+    SELECT "Размер лота"
+    INTO v_lot_size
+    FROM public."Список ценных бумаг"
+    WHERE "ID ценной бумаги" = p_security_id;
+
+    IF v_lot_size IS NULL OR v_lot_size <= 0 THEN
+        RETURN NULL;
+    END IF;
+
+    -- Итоговая стоимость = цена_акции × размер_лота × количество_лотов
+    v_total_price := v_price_per_share * v_lot_size * p_lot_amount;
+
+    RETURN v_total_price;
+END;
+$BODY$;
+
 CREATE OR REPLACE FUNCTION public.add_stock(
     p_ticker character varying,
     p_isin character varying,
@@ -2245,127 +2248,4 @@ DECLARE
 BEGIN
     RAISE NOTICE 'Начало создания тестовых данных...';
 
-    --------------------------------------------------------
-    -- 2. СОЗДАЁМ ВТОРОГО ПОЛЬЗОВАТЕЛЯ: 1@f.com / 1
-    --------------------------------------------------------
-    INSERT INTO "Пользователь"
-    ("Электронная почта", "Дата регистрации", "Логин", "Пароль", "ID статуса верификации", "ID статуса блокировки")
-    VALUES (
-        '1@f.com',
-        '2025-12-13'::DATE,
-        '1',
-        '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO',
-        1,
-		1
-    )
-    RETURNING "ID пользователя" INTO uid2;
-
-    RAISE NOTICE 'Создан пользователь 2 (логин: 1, email: 1@f.com), ID = %', uid2;
-
-    --------------------------------------------------------
-    -- 4. ДЕПОЗИТАРНЫЙ СЧЁТ ДЛЯ ВТОРОГО ПОЛЬЗОВАТЕЛЯ
-    --------------------------------------------------------
-    INSERT INTO "Депозитарный счёт"
-    ("Номер депозитарного договора", "Дата открытия", "ID пользователя")
-    VALUES ('D200', '2025-12-13', uid2)
-    RETURNING "ID депозитарного счёта" INTO depo_id2;
-
-    --------------------------------------------------------
-    -- 5. КУРСЫ ВАЛЮТ — теперь в новую таблицу currency_rate
-    --------------------------------------------------------
-    -- Предполагаем:
-    --   "Список валют".ID = 1 → RUB
-    --   "Список валют".ID = 2 → USD
-
-    INSERT INTO currency_rate (base_currency_id, target_currency_id, rate, rate_date, rate_time)
-    VALUES
-        -- RUB всегда базовая, курс RUB → RUB = 1
-        (1, 1, 1.00000000, CURRENT_DATE, NOW()),
-
-        -- Основной курс: сколько RUB за 1 USD (например, 95.35)
-        (1, 2, 95.35000000, CURRENT_DATE, NOW())
-
-    ON CONFLICT (base_currency_id, target_currency_id, rate_date)
-    DO UPDATE SET
-        rate = EXCLUDED.rate,
-        rate_time = NOW();
-
-    --------------------------------------------------------
-    -- 6. БАЛАНС ДЕПОЗИТАРНОГО СЧЁТА
-    --------------------------------------------------------
-    -- Для второго пользователя
-    INSERT INTO "Баланс депозитарного счёта"
-    ("Сумма", "ID депозитарного счёта", "ID пользователя", "ID ценной бумаги")
-    VALUES
-        (5, depo_id2, uid2, 1),
-        (20, depo_id2, uid2, 2),
-        (52, depo_id2, uid2, 3);
-
-    --------------------------------------------------------
-    -- 7. БРОКЕРСКИЙ СЧЁТ
-    --------------------------------------------------------
-
-    -- Для второго пользователя
-    INSERT INTO "Брокерский счёт"
-    ("Баланс", "ИНН", "БИК", "ID банка", "ID пользователя", "ID валюты")
-    VALUES (50000.00, '', '044525222', 1, uid2, 1)
-    RETURNING "ID брокерского счёта" INTO broker_id2;
-
-    --------------------------------------------------------
-    -- 8. ПРЕДЛОЖЕНИЯ НА ПРОДАЖУ/ПОКУПКУ
-    --------------------------------------------------------
-
-    RAISE NOTICE 'Тестовые данные успешно созданы!';
-    RAISE NOTICE 'Пользователь 2 (1@f.com): ID = %', uid2;
-
 END $$;
-
-
-INSERT INTO public."История операций бр. счёта" (
-    "Сумма операции",
-    "Время",
-    "ID брокерского счёта",
-    "ID сотрудника",
-    "ID типа операции бр. счёта"
-) VALUES
-    -- Счёт 1
-    (100000.00, '2025-10-15 09:30:00', 1, 1, 1),  -- Пополнение 100 000 ₽
-    (-15000.00, '2025-10-20 14:22:10', 1, 2, 2),  -- Списание 15 000 ₽
-    (50000.00,  '2025-11-05 11:15:00', 1, 1, 1),  -- Пополнение 50 000 ₽
-    (-8000.50,  '2025-11-12 16:45:30', 1, 3, 2);  -- Списание 8 000.50 ₽
-
-
-------------------------------------------------------------
--- 4. ВЫВОД РЕЗУЛЬТАТОВ ТЕСТОВ
-------------------------------------------------------------
-
--- Один запрос — все результаты сразу
-WITH results AS (
-    SELECT 'get_currency_rate_RUB' AS function_name,
-           get_currency_rate(1)    AS result
-    UNION ALL
-    SELECT 'get_currency_rate_USD',
-           get_currency_rate(2)
-    UNION ALL
-    SELECT 'calc_depo_value',
-           calc_depo_value(1, 1, 2)
-    UNION ALL
-    SELECT 'calc_total_account_value',
-           calc_total_account_value(1, 1)
-    UNION ALL
-    SELECT 'calc_offer_value',
-           calc_offer_value(1)
-    UNION ALL
-    SELECT 'calc_depo_growth',
-           calc_depo_growth(1, 1, '1 day')
-    UNION ALL
-    SELECT 'calc_stock_growth',
-           calc_stock_growth(1)
-)
-SELECT function_name, result::text AS result_value      -- приводим к тексту, т.к. типы возврата могут отличаться
-FROM results
-UNION ALL
-SELECT 'Баланс депозитарного счёта' AS function_name,
-       to_jsonb(t)::text AS result_value
-FROM "Баланс депозитарного счёта" t
-ORDER BY function_name;
