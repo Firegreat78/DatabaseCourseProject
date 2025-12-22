@@ -580,8 +580,7 @@ INSERT INTO "Статус верификации"("Статус верифика
 VALUES
 ('Не подтверждён'),
 ('Подтверждён'),
-('Ожидает верификации'),
-('Заблокирован');
+('Ожидает верификации');
 
 INSERT INTO "Статус трудоустройства"("Статус трудоустройства")
 VALUES
@@ -1527,8 +1526,7 @@ DECLARE
     v_active_status_id INTEGER := 3;  -- Статус нового предложения
     v_employee_id INTEGER := 5;       -- Сотрудник по умолчанию
 	v_empty_brokerage_type INTEGER := 6; -- Неотображающаяся операция
-
-    v_deposit_operation_type_id INTEGER := 2; -- Тип операции деп. счёта: заморозка
+    v_lock_deposit_operation_type_id INTEGER := 3; -- Тип операции деп. счёта: заморозка
 BEGIN
     -- 1. Проверка: количество лотов должно быть строго больше нуля
     IF p_lot_amount_to_sell <= 0 THEN
@@ -1631,7 +1629,7 @@ BEGIN
         v_employee_id,
         v_brokerage_operation_id,
         p_brokerage_account_id,
-        v_deposit_operation_type_id
+        v_lock_deposit_operation_type_id
     )
     RETURNING "ID операции деп. счёта" INTO v_deposit_operation_id;
 
@@ -1819,6 +1817,7 @@ DECLARE
     v_user_id INTEGER;
 
     v_broker_operation_id INTEGER;     -- ID операции в истории бр. счёта (сумма 0 изначально)
+	v_depo_operation_id INTEGER;
 
     c_sell_type_id CONSTANT INTEGER := 2;                   -- Тип предложения "Продажа"
     c_active_status_id CONSTANT INTEGER := 3;               -- Статус "Новое/Активное"
@@ -1826,8 +1825,8 @@ DECLARE
     c_rejected_status_id CONSTANT INTEGER := 1;             -- Статус "Отклонено"
 
     -- Типы операций депозитарного счёта
-    c_deposit_withdraw_type_id CONSTANT INTEGER := 2;       -- Списание ценных бумаг (при продаже)
-    c_deposit_deposit_type_id CONSTANT INTEGER := 1;        -- Зачисление ценных бумаг (при отклонении)
+    c_depo_sell CONSTANT INTEGER := 2;       -- Списание ценных бумаг (при продаже)
+    c_depo_unfreeze CONSTANT INTEGER := 4;        -- Разморозка ЦБ
 	c_brokerage_operation_sell_id CONSTANT INTEGER := 5;
 BEGIN
     -- 1. Получаем данные предложения и проверяем, что оно активно и на продажу
@@ -1870,12 +1869,17 @@ BEGIN
 	-- Одобрение заявки на продажу ценных бумаг:
 	-- 1. Пополнение брокерского счёта, который используется для покупки бумаг
 	-- 2. Изменение статуса на "Одобрено".
+	-- 3. В записи истории деп. счёта: заморожено -> продано
     IF p_verify THEN
         UPDATE public."История операций бр. счёта"
         SET "Сумма операции" = v_cost,
 		"ID типа операции бр. счёта" = c_brokerage_operation_sell_id,
 		"Время" = CURRENT_TIMESTAMP
         WHERE "ID операции бр. счёта" = v_broker_operation_id;
+
+		UPDATE public."История операций деп. счёта"
+		SET "ID типа операции деп. счёта" = c_depo_sell
+		WHERE "ID операции бр. счёта" = v_broker_operation_id;
 
 		UPDATE public."Брокерский счёт"
 		SET "Баланс" = "Баланс" + v_cost
@@ -1924,7 +1928,7 @@ BEGIN
             p_employee_id,
             v_broker_operation_id,
             v_brokerage_account_id,
-            c_deposit_deposit_type_id
+            c_depo_unfreeze
         );
 
         UPDATE public."Предложение"

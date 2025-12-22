@@ -524,13 +524,30 @@ async def get_proposal_types(db: AsyncSession = Depends(get_db)):
     ]
 
 
-@app.get("/api/user/{user_id}")
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    registration_date: date
+    verification_status_id: int
+    block_status_id: int
+
+    class Config:
+        from_attributes = True
+
+@app.get("/api/user/{user_id}", response_model=UserResponse)
 async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
+
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
-    return {k: v for k, v in user.__dict__.items() if k != "_sa_instance_state"}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+
+    return user
 
 
 @app.get("/api/broker/proposal/{proposal_id}")

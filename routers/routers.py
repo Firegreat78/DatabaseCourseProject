@@ -7,6 +7,7 @@ from db.session import get_db
 from db.auth import get_current_user
 from pydantic import BaseModel, Field, PositiveFloat, validator, field_validator
 from decimal import Decimal
+from datetime import datetime, date
 from db.models.models import (
     Bank,
     BrokerageAccount,
@@ -517,3 +518,141 @@ async def get_banned_status(
         )
     ban_status_id = row[0]
     return CheckBannedStatus(is_banned=(ban_status_id == 2))
+
+
+# Схема для одной операции
+class DepositaryOperation(BaseModel):
+    id: int
+    amount: Decimal  # "Сумма операции"
+    time: datetime   # "Время"
+    security_name: str  # "Наименование ценной бумаги" (получаем из JOIN с "Список ценных бумаг")
+    operation_type: str  # "Тип операции" (из "Тип операции депозитарного счёта")
+
+    class Config:
+        from_attributes = True  # Позволяет использовать объекты ORM (альясы, если нужно)
+
+# Схема для депозитарного счёта
+class DepositaryAccount(BaseModel):
+    id: int
+    contract_number: str  # "Номер депозитарного договора"
+    opening_date: date     # "Дата открытия" (в формате строки, например, "2025-01-01")
+
+    class Config:
+        from_attributes = True
+
+
+class DepositaryBalance(BaseModel):
+    security_name: str
+    amount: Decimal
+
+# Схема для ответа от эндпоинта
+class DepositaryAccountResponse(BaseModel):
+    account: DepositaryAccount
+    balance: List[DepositaryBalance]
+    operations: List[DepositaryOperation]
+
+
+@brokerage_accounts_router.get(
+    "/users/me/depositary-account",
+    response_model=DepositaryAccountResponse
+)
+async def get_depositary_account(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    user_id = current_user["id"]
+
+    # ------------------------------------------------------------------
+    # 1. Получаем депозитарный счёт пользователя
+    # ------------------------------------------------------------------
+    account_query = text("""
+        SELECT
+            "ID депозитарного счёта"        AS id,
+            "Номер депозитарного договора" AS contract_number,
+            "Дата открытия"                AS opening_date
+        FROM public."Депозитарный счёт"
+        WHERE "ID пользователя" = :user_id
+    """)
+
+    result = await db.execute(account_query, {"user_id": user_id})
+    account_row = result.mappings().first()
+
+    if not account_row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Депозитарный счёт не найден"
+        )
+
+    account = DepositaryAccount(**account_row)
+
+    # ------------------------------------------------------------------
+    # 2. Баланс депозитарного счёта
+    # ------------------------------------------------------------------
+    balance_query = text("""
+        SELECT
+            ss."Наименование" AS security_name,
+            b."Сумма"         AS amount
+        FROM public."Баланс депозитарного счёта" b
+        JOIN public."Список ценных бумаг" ss
+            ON b."ID ценной бумаги" = ss."ID ценной бумаги"
+        WHERE
+            b."ID депозитарного счёта" = :account_id
+            AND b."ID пользователя" = :user_id
+        ORDER BY ss."Наименование"
+    """)
+
+    result_balance = await db.execute(
+        balance_query,
+        {
+            "account_id": account.id,
+            "user_id": user_id
+        }
+    )
+
+    balance = [
+        DepositaryBalance(**row)
+        for row in result_balance.mappings().all()
+    ]
+
+    # ------------------------------------------------------------------
+    # 3. История операций депозитарного счёта
+    # ------------------------------------------------------------------
+    operations_query = text("""
+        SELECT
+            ho."ID операции деп. счёта" AS id,
+            ho."Сумма операции"         AS amount,
+            ho."Время"                  AS time,
+            ss."Наименование"           AS security_name,
+            tot."Тип"                   AS operation_type
+        FROM public."История операций деп. счёта" ho
+        JOIN public."Список ценных бумаг" ss
+            ON ho."ID ценной бумаги" = ss."ID ценной бумаги"
+        JOIN public."Тип операции депозитарного счёта" tot
+            ON ho."ID типа операции деп. счёта" = tot."ID типа операции деп. счёта"
+        WHERE
+            ho."ID депозитарного счёта" = :account_id
+            AND ho."ID пользователя" = :user_id
+        ORDER BY ho."Время" DESC
+    """)
+
+    result_ops = await db.execute(
+        operations_query,
+        {
+            "account_id": account.id,
+            "user_id": user_id
+        }
+    )
+
+    operations = [
+        DepositaryOperation(**row)
+        for row in result_ops.mappings().all()
+    ]
+
+    # ------------------------------------------------------------------
+    # 4. Ответ
+    # ------------------------------------------------------------------
+    return DepositaryAccountResponse(
+        account=account,
+        balance=balance,
+        operations=operations
+    )
