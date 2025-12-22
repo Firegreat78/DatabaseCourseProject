@@ -11,7 +11,7 @@ from core.config import PORT, HOST
 from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, get_current_user
 from pydantic import BaseModel, EmailStr, field_validator, ConfigDict, Field
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Union
 from datetime import datetime, date
 import re
 
@@ -237,16 +237,24 @@ class ProposalCreateRequest(BaseModel):
 
 @app.post("/api/login/user", response_model=Token, summary="Вход пользователя")
 async def login_user(
-        form_data: LoginRequest,  # Исправлено: form_data: LoginRequest
+        form_data: LoginRequest,
         db: AsyncSession = Depends(get_db)
 ):
-    user = await authenticate_user(db, form_data.login, form_data.password)  # form_data
+    user = await authenticate_user(db, form_data.login, form_data.password)
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный логин или пароль",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    elif user.block_status_id != 1:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Аккаунт заблокирован",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
     access_token = create_access_token(
         data={"sub": user.login, "role": "user", "user_id": user.id}
     )
@@ -270,6 +278,15 @@ async def login_staff(
             detail="Неверный логин или пароль",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    elif staff.employment_status_id == 2:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Аккаунт заблокирован",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    
+
     access_token = create_access_token(
         data={"sub": staff.login, "role": staff.rights_level, "staff_id": staff.id}
     )
@@ -656,9 +673,8 @@ class StaffUpdate(BaseModel):
     login: Optional[str] = None
     password: Optional[str] = None
     contract_number: Optional[str] = None
-    rights_level: Optional[int] = None
+    rights_level: Optional[str] = None  # Принимаем и int и str
     employment_status_id: Optional[int] = None
-
 
 @app.put("/api/staff/{staff_id}")
 async def update_staff(
@@ -674,15 +690,18 @@ async def update_staff(
     if not staff:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден")
 
-    result_login = await db.execute(
-        select(Staff).where(Staff.login == data.login, Staff.id != staff_id)
-    )
-    if result_login.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Логин уже занят"
+    # Проверяем уникальность логина только если логин меняется
+    if data.login is not None and data.login != staff.login:
+        result_login = await db.execute(
+            select(Staff).where(Staff.login == data.login, Staff.id != staff_id)
         )
+        if result_login.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Логин уже занят"
+            )
 
+    # Обновляем только те поля, которые переданы в запросе
     if data.login is not None:
         staff.login = data.login
 
@@ -693,7 +712,8 @@ async def update_staff(
         staff.contract_number = data.contract_number
 
     if data.rights_level is not None:
-        staff.rights_level = data.rights_level
+        # Убеждаемся, что права хранятся как строка
+        staff.rights_level = str(data.rights_level)
 
     if data.employment_status_id is not None:
         staff.employment_status_id = data.employment_status_id
@@ -705,7 +725,6 @@ async def update_staff(
         "id": staff.id,
         "message": "Сотрудник успешно обновлён"
     }
-
 
 class StaffCreate(BaseModel):
     login: str
