@@ -598,6 +598,7 @@ async def get_depositary_account(
         WHERE
             b."ID депозитарного счёта" = :account_id
             AND b."ID пользователя" = :user_id
+            AND b."Сумма" > 0
         ORDER BY ss."Наименование"
     """)
 
@@ -632,6 +633,7 @@ async def get_depositary_account(
         WHERE
             ho."ID депозитарного счёта" = :account_id
             AND ho."ID пользователя" = :user_id
+            AND ho."Сумма операции" > 0
         ORDER BY ho."Время" DESC
     """)
 
