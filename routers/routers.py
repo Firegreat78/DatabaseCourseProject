@@ -35,6 +35,10 @@ brokerage_accounts_router = APIRouter(
     prefix="/api", tags=["Brokerage Accounts"]
 )
 
+charts_router = APIRouter(
+    prefix='/charts', tags=['Charts']
+)
+
 
 class BrokerageAccountOut(BaseModel):
     account_id: int
@@ -658,3 +662,42 @@ async def get_depositary_account(
         balance=balance,
         operations=operations
     )
+
+
+class DepositaryBalanceChartItem(BaseModel):
+    security_name: str
+    quantity: Decimal
+
+    class Config:
+        from_attributes = True
+
+
+@charts_router.get(
+    "/depositary-balance",
+    response_model=list[DepositaryBalanceChartItem]
+)
+async def get_depositary_balance_chart(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    user_id = current_user["id"]
+
+    query = text("""
+        SELECT
+            ss."Наименование" AS security_name,
+            b."Сумма"         AS quantity
+        FROM public."Баланс депозитарного счёта" b
+        JOIN public."Список ценных бумаг" ss
+            ON ss."ID ценной бумаги" = b."ID ценной бумаги"
+        WHERE
+            b."ID пользователя" = :user_id
+            AND b."Сумма" > 0
+        ORDER BY ss."Наименование"
+    """)
+
+    result = await db.execute(query, {"user_id": user_id})
+
+    return [
+        DepositaryBalanceChartItem(**row)
+        for row in result.mappings().all()
+    ]
