@@ -319,6 +319,38 @@ CREATE TABLE "Список валют"
 WITH (autovacuum_enabled=true);
 ALTER TABLE "Список валют" ADD CONSTRAINT "Unique_Identifier6" PRIMARY KEY ("ID валюты");
 
+CREATE OR REPLACE FUNCTION validate_currency_fields()
+RETURNS TRIGGER AS $$
+DECLARE
+    symbol_length INTEGER;
+BEGIN
+    -- Проверяем, что код содержит ровно 3 символа
+    IF LENGTH(NEW."Код") != 3 THEN
+        RAISE EXCEPTION 'Поле "Код" должно содержать ровно 3 символа. Текущая длина: %', LENGTH(NEW."Код");
+    END IF;
+
+    -- Получаем длину строки в символах (не байтах) для Unicode
+    symbol_length := CHAR_LENGTH(NEW."Символ");
+
+    -- Проверяем, что символ содержит ровно 1 символ (включая Unicode)
+    IF symbol_length != 1 THEN
+        RAISE EXCEPTION 'Поле "Символ" должно содержать ровно 1 символ. Текущая длина: %', symbol_length;
+    END IF;
+
+    -- Дополнительная проверка: не разрешаем пробелы (опционально)
+    IF TRIM(NEW."Символ") = '' THEN
+        RAISE EXCEPTION 'Поле "Символ" не может быть пустым или состоять только из пробелов';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER check_currency_fields_before_insert_or_update
+    BEFORE INSERT OR UPDATE ON "Список валют"
+    FOR EACH ROW
+    EXECUTE FUNCTION validate_currency_fields();
+
 -- Table Тип предложения
 
 CREATE TABLE "Тип предложения"
@@ -403,6 +435,30 @@ CREATE TABLE currency_rate (
     rate_date DATE NOT NULL DEFAULT CURRENT_DATE,
     UNIQUE (currency_id, rate_date) -- Один курс на пару в день
 );
+
+CREATE OR REPLACE FUNCTION check_currency_rate_positive()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    -- Проверяем, что курс положительный
+    IF NEW.rate <= 0 THEN
+        RAISE EXCEPTION 'Курс валюты должен быть положительным числом. Получено: %', NEW.rate;
+    END IF;
+
+    -- Также можно проверить, что курс не NULL (хотя у нас есть NOT NULL constraint)
+    IF NEW.rate IS NULL THEN
+        RAISE EXCEPTION 'Курс валюты не может быть NULL';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_check_rate_positive_insert_or_update
+    BEFORE INSERT OR UPDATE ON public.currency_rate
+    FOR EACH ROW
+    EXECUTE FUNCTION check_currency_rate_positive();
 
 CREATE TABLE "Статус блока пользователя" (
 	"ID статуса блокировки" Serial PRIMARY KEY,
