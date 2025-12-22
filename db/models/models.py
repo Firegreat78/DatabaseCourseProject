@@ -550,25 +550,15 @@ class CurrencyRate(Base):
     __tablename__ = "currency_rate"
     __table_args__ = (
         UniqueConstraint(
-            "base_currency_id",
-            "target_currency_id",
+            "currency_id",
             "rate_date",
-            name="uq_currency_rate_pair_date",
+            name="currency_rate_currency_id_rate_date_key",
         ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    base_currency_id: Mapped[int] = mapped_column(
-        ForeignKey(
-            'Список валют.ID валюты',
-            ondelete="RESTRICT",
-            onupdate="RESTRICT",
-        ),
-        nullable=False,
-    )
-
-    target_currency_id: Mapped[int] = mapped_column(
+    currency_id: Mapped[int] = mapped_column(
         ForeignKey(
             'Список валют.ID валюты',
             ondelete="RESTRICT",
@@ -585,36 +575,25 @@ class CurrencyRate(Base):
     rate_date: Mapped[date] = mapped_column(
         Date,
         nullable=False,
-        default=date.today,
+        server_default=func.current_date(),  # соответствует DEFAULT CURRENT_DATE
     )
 
-    rate_time: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-        default=lambda: datetime.now(timezone.utc)
-    )
+    # -------- relationship --------
 
-    # -------- relationships --------
-
-    base_currency: Mapped["Currency"] = relationship(
+    currency: Mapped["Currency"] = relationship(
         "Currency",
-        primaryjoin="foreign(CurrencyRate.base_currency_id) == remote(Currency.id)",
-        foreign_keys=[base_currency_id],
+        primaryjoin="foreign(CurrencyRate.currency_id) == remote(Currency.id)",
+        foreign_keys=[currency_id],
         lazy="joined",
-    )
-
-    target_currency: Mapped["Currency"] = relationship(
-        "Currency",
-        primaryjoin="foreign(CurrencyRate.target_currency_id) == remote(Currency.id)",
-        foreign_keys=[target_currency_id],
-        lazy="joined",
+        back_populates="rates",  # опционально, если в Currency есть backref
     )
 
     def __repr__(self) -> str:
         return (
             f"<CurrencyRate "
-            f"{self.base_currency_id}->{self.target_currency_id} "
-            f"{self.rate} ({self.rate_date})>"
+            f"currency_id={self.currency_id} "
+            f"rate={self.rate} "
+            f"date={self.rate_date}>"
         )
 
 
