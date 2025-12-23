@@ -40,7 +40,8 @@ from db.models.models import (
     Staff,
     User,
     VerificationStatus,
-    UserRestrictionStatus
+    UserRestrictionStatus,
+    ProposalStatus
 )
 
 app = FastAPI()
@@ -68,6 +69,8 @@ TABLES = {
     "user": User,
     "staff": Staff,
     "proposal": Proposal,
+    "proposal_type": ProposalType,
+    "proposal_status": ProposalStatus,
     "brokerage_account": BrokerageAccount,
     "depository_account": DepositoryAccount,
     "dividend": Dividend,
@@ -76,26 +79,13 @@ TABLES = {
     "depository_account_history": DepositoryAccountHistory,
     "depository_account_balance": DepositoryAccountBalance,
     "price_history": PriceHistory,
-    "currency_rate": CurrencyRate
+    "currency_rate": CurrencyRate,
+    "user_restriction_status": UserRestrictionStatus
 }
 
 logger = logging.getLogger(__name__)
 
-@app.get("/api/{table_name}")
-async def get_table_data(table_name: str, db: AsyncSession = Depends(get_db)):
-    model = TABLES.get(table_name)
-    if not model:
-        return {"error": f"Table not found (given={table_name})"}
-    print(f"before result model={model}")
-    result = await db.execute(select(model))
-    print(f"after result model={model}")
-    rows = result.scalars().all()
 
-    data = [
-        {k: v for k, v in row.__dict__.items() if k != "_sa_instance_state"}
-        for row in rows
-    ]
-    return data
 
 
 @app.get("/ping-db")
@@ -1397,6 +1387,965 @@ async def get_stocks(db: AsyncSession = Depends(get_db)):
         for row in result
     ]
 
+class DictionaryItemCreate(BaseModel):
+    """Общая модель для создания элемента справочника"""
+    pass
+
+class EmploymentStatusCreate(DictionaryItemCreate):
+    status: str
+
+class VerificationStatusCreate(DictionaryItemCreate):
+    status: str
+
+class UserRestrictionStatusCreate(DictionaryItemCreate):
+    status: str
+
+class ProposalStatusCreate(DictionaryItemCreate):
+    status: str
+
+class ProposalTypeCreate(DictionaryItemCreate):
+    type: str
+
+class DepositoryAccountOperationTypeCreate(DictionaryItemCreate):
+    type: str
+
+class BrokerageAccountOperationTypeCreate(DictionaryItemCreate):
+    type_name: str
+
+class CurrencyCreate(DictionaryItemCreate):
+    code: str
+    symbol: str
+
+class BankCreate(DictionaryItemCreate):
+    name: str
+    inn: str
+    ogrn: str
+    bik: str
+    license_expiry: date
+
+# Модели для обновления
+class EmploymentStatusUpdate(BaseModel):
+    status: Optional[str] = None
+
+class VerificationStatusUpdate(BaseModel):
+    status: Optional[str] = None
+
+class UserRestrictionStatusUpdate(BaseModel):
+    status: Optional[str] = None
+
+class ProposalStatusUpdate(BaseModel):
+    status: Optional[str] = None
+
+class ProposalTypeUpdate(BaseModel):
+    type: Optional[str] = None
+
+class DepositoryAccountOperationTypeUpdate(BaseModel):
+    type: Optional[str] = None
+
+class BrokerageAccountOperationTypeUpdate(BaseModel):
+    type_name: Optional[str] = None
+
+class CurrencyUpdate(BaseModel):
+    code: Optional[str] = None
+    symbol: Optional[str] = None
+
+class BankUpdate(BaseModel):
+    name: Optional[str] = None
+    inn: Optional[str] = None
+    ogrn: Optional[str] = None
+    bik: Optional[str] = None
+    license_expiry: Optional[date] = None
+
+# ==================== CRUD эндпоинты для EmploymentStatus ====================
+
+@app.post("/api/employment_status", status_code=status.HTTP_201_CREATED)
+async def create_employment_status(
+    data: EmploymentStatusCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    try:
+        new_status = EmploymentStatus(
+            status=data.status
+        )
+        db.add(new_status)
+        await db.commit()
+        await db.refresh(new_status)
+        
+        return {
+            "id": new_status.id,
+            "status": new_status.status
+        }
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ошибка уникальности данных"
+        )
+
+@app.put("/api/employment_status/{item_id}")
+async def update_employment_status(
+    item_id: int,
+    data: EmploymentStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(EmploymentStatus).where(EmploymentStatus.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Статус трудоустройства не найден"
+        )
+    
+    if data.status is not None:
+        item.status = data.status
+    
+    await db.commit()
+    await db.refresh(item)
+    
+    return {
+        "id": item.id,
+        "status": item.status
+    }
+
+@app.delete("/api/employment_status/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_employment_status(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(EmploymentStatus).where(EmploymentStatus.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Статус трудоустройства не найден"
+        )
+    
+    # Проверка на использование в других таблицах
+    staff_check = await db.execute(
+        select(Staff).where(Staff.employment_status_id == item_id).limit(1)
+    )
+    if staff_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить статус, так как он используется в записях персонала"
+        )
+    
+    await db.delete(item)
+    await db.commit()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# ==================== CRUD эндпоинты для VerificationStatus ====================
+
+@app.post("/api/verification_status", status_code=status.HTTP_201_CREATED)
+async def create_verification_status(
+    data: VerificationStatusCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    try:
+        new_status = VerificationStatus(
+            status=data.status
+        )
+        db.add(new_status)
+        await db.commit()
+        await db.refresh(new_status)
+        
+        return {
+            "id": new_status.id,
+            "status": new_status.status
+        }
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ошибка уникальности данных"
+        )
+
+@app.put("/api/verification_status/{item_id}")
+async def update_verification_status(
+    item_id: int,
+    data: VerificationStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(VerificationStatus).where(VerificationStatus.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Статус верификации не найден"
+        )
+    
+    if data.status is not None:
+        item.status = data.status
+    
+    await db.commit()
+    await db.refresh(item)
+    
+    return {
+        "id": item.id,
+        "status": item.status
+    }
+
+@app.delete("/api/verification_status/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_verification_status(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(VerificationStatus).where(VerificationStatus.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Статус верификации не найден"
+        )
+    
+    # Проверка на использование в таблице пользователей
+    user_check = await db.execute(
+        select(User).where(User.verification_status_id == item_id).limit(1)
+    )
+    if user_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить статус, так как он используется в записях пользователей"
+        )
+    
+    await db.delete(item)
+    await db.commit()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# ==================== CRUD эндпоинты для UserRestrictionStatus ====================
+
+@app.post("/api/user_restriction_status", status_code=status.HTTP_201_CREATED)
+async def create_user_restriction_status(
+    data: UserRestrictionStatusCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    try:
+        new_status = UserRestrictionStatus(
+            status=data.status
+        )
+        db.add(new_status)
+        await db.commit()
+        await db.refresh(new_status)
+        
+        return {
+            "id": new_status.id,
+            "status": new_status.status
+        }
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ошибка уникальности данных"
+        )
+
+@app.put("/api/user_restriction_status/{item_id}")
+async def update_user_restriction_status(
+    item_id: int,
+    data: UserRestrictionStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(UserRestrictionStatus).where(UserRestrictionStatus.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Статус блокировки не найден"
+        )
+    
+    if data.status is not None:
+        item.status = data.status
+    
+    await db.commit()
+    await db.refresh(item)
+    
+    return {
+        "id": item.id,
+        "status": item.status
+    }
+
+@app.delete("/api/user_restriction_status/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_restriction_status(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(UserRestrictionStatus).where(UserRestrictionStatus.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Статус блокировки не найден"
+        )
+    
+    # Проверка на использование в таблице пользователей
+    user_check = await db.execute(
+        select(User).where(User.block_status_id == item_id).limit(1)
+    )
+    if user_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить статус, так как он используется в записях пользователей"
+        )
+    
+    await db.delete(item)
+    await db.commit()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# ==================== CRUD эндпоинты для ProposalStatus ====================
+
+@app.post("/api/proposal_status", status_code=status.HTTP_201_CREATED)
+async def create_proposal_status(
+    data: ProposalStatusCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    try:
+        new_status = ProposalStatus(
+            status=data.status
+        )
+        db.add(new_status)
+        await db.commit()
+        await db.refresh(new_status)
+        
+        return {
+            "id": new_status.id,
+            "status": new_status.status
+        }
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ошибка уникальности данных"
+        )
+
+@app.put("/api/proposal_status/{item_id}")
+async def update_proposal_status(
+    item_id: int,
+    data: ProposalStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(ProposalStatus).where(ProposalStatus.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Статус предложения не найден"
+        )
+    
+    if data.status is not None:
+        item.status = data.status
+    
+    await db.commit()
+    await db.refresh(item)
+    
+    return {
+        "id": item.id,
+        "status": item.status
+    }
+
+@app.delete("/api/proposal_status/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_proposal_status(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(ProposalStatus).where(ProposalStatus.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Статус предложения не найден"
+        )
+    
+    # Проверка на использование в таблице предложений
+    proposal_check = await db.execute(
+        select(Proposal).where(Proposal.status_id == item_id).limit(1)
+    )
+    if proposal_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить статус, так как он используется в записях предложений"
+        )
+    
+    await db.delete(item)
+    await db.commit()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# ==================== CRUD эндпоинты для ProposalType ====================
+
+@app.post("/api/proposal_type", status_code=status.HTTP_201_CREATED)
+async def create_proposal_type(
+    data: ProposalTypeCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    try:
+        new_type = ProposalType(
+            type=data.type
+        )
+        db.add(new_type)
+        await db.commit()
+        await db.refresh(new_type)
+        
+        return {
+            "id": new_type.id,
+            "type": new_type.type
+        }
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ошибка уникальности данных"
+        )
+
+@app.put("/api/proposal_type/{item_id}")
+async def update_proposal_type(
+    item_id: int,
+    data: ProposalTypeUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(ProposalType).where(ProposalType.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Тип предложения не найден"
+        )
+    
+    if data.type is not None:
+        item.type = data.type
+    
+    await db.commit()
+    await db.refresh(item)
+    
+    return {
+        "id": item.id,
+        "type": item.type
+    }
+
+@app.delete("/api/proposal_type/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_proposal_type(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(ProposalType).where(ProposalType.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Тип предложения не найден"
+        )
+    
+    # Проверка на использование в таблице предложений
+    proposal_check = await db.execute(
+        select(Proposal).where(Proposal.proposal_type_id == item_id).limit(1)
+    )
+    if proposal_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить тип, так как он используется в записях предложений"
+        )
+    
+    await db.delete(item)
+    await db.commit()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# ==================== CRUD эндпоинты для DepositoryAccountOperationType ====================
+
+@app.post("/api/depository_account_operation_type", status_code=status.HTTP_201_CREATED)
+async def create_depository_account_operation_type(
+    data: DepositoryAccountOperationTypeCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    try:
+        new_type = DepositoryAccountOperationType(
+            type=data.type
+        )
+        db.add(new_type)
+        await db.commit()
+        await db.refresh(new_type)
+        
+        return {
+            "id": new_type.id,
+            "type": new_type.type
+        }
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ошибка уникальности данных"
+        )
+
+@app.put("/api/depository_account_operation_type/{item_id}")
+async def update_depository_account_operation_type(
+    item_id: int,
+    data: DepositoryAccountOperationTypeUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(DepositoryAccountOperationType).where(DepositoryAccountOperationType.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Тип операции депозитарного счета не найден"
+        )
+    
+    if data.type is not None:
+        item.type = data.type
+    
+    await db.commit()
+    await db.refresh(item)
+    
+    return {
+        "id": item.id,
+        "type": item.type
+    }
+
+@app.delete("/api/depository_account_operation_type/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_depository_account_operation_type(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(DepositoryAccountOperationType).where(DepositoryAccountOperationType.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Тип операции депозитарного счета не найден"
+        )
+    
+    # Проверка на использование в истории операций
+    history_check = await db.execute(
+        select(DepositoryAccountHistory).where(DepositoryAccountHistory.operation_type_id == item_id).limit(1)
+    )
+    if history_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить тип, так как он используется в истории операций"
+        )
+    
+    await db.delete(item)
+    await db.commit()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# ==================== CRUD эндпоинты для BrokerageAccountOperationType ====================
+
+@app.post("/api/brokerage_account_operation_type", status_code=status.HTTP_201_CREATED)
+async def create_brokerage_account_operation_type(
+    data: BrokerageAccountOperationTypeCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    try:
+        new_type = BrokerageAccountOperationType(
+            type_name=data.type_name
+        )
+        db.add(new_type)
+        await db.commit()
+        await db.refresh(new_type)
+        
+        return {
+            "id": new_type.id,
+            "type": new_type.type_name
+        }
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ошибка уникальности данных"
+        )
+
+@app.put("/api/brokerage_account_operation_type/{item_id}")
+async def update_brokerage_account_operation_type(
+    item_id: int,
+    data: BrokerageAccountOperationTypeUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(BrokerageAccountOperationType).where(BrokerageAccountOperationType.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Тип операции брокерского счета не найден"
+        )
+    
+    if data.type_name is not None:
+        item.type_name = data.type_name
+    
+    await db.commit()
+    await db.refresh(item)
+    
+    return {
+        "id": item.id,
+        "type": item.type_name
+    }
+
+@app.delete("/api/brokerage_account_operation_type/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_brokerage_account_operation_type(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(BrokerageAccountOperationType).where(BrokerageAccountOperationType.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Тип операции брокерского счета не найден"
+        )
+    
+    # Проверка на использование в истории операций
+    history_check = await db.execute(
+        select(BrokerageAccountHistory).where(BrokerageAccountHistory.operation_type_id == item_id).limit(1)
+    )
+    if history_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить тип, так как он используется в истории операций"
+        )
+    
+    await db.delete(item)
+    await db.commit()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# ==================== CRUD эндпоинты для Currency ====================
+
+@app.post("/api/currency", status_code=status.HTTP_201_CREATED)
+async def create_currency(
+    data: CurrencyCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    try:
+        new_currency = Currency(
+            code=data.code,
+            symbol=data.symbol
+        )
+        db.add(new_currency)
+        await db.commit()
+        await db.refresh(new_currency)
+        
+        return {
+            "id": new_currency.id,
+            "code": new_currency.code,
+            "symbol": new_currency.symbol
+        }
+    except IntegrityError as e:
+        await db.rollback()
+        if "unique constraint" in str(e).lower() and "code" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Код валюты должен быть уникальным"
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ошибка уникальности данных"
+        )
+
+@app.put("/api/currency/{item_id}")
+async def update_currency(
+    item_id: int,
+    data: CurrencyUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(Currency).where(Currency.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Валюта не найдена"
+        )
+    
+    if data.code is not None:
+        # Проверка уникальности кода валюты
+        if data.code != item.code:
+            code_check = await db.execute(
+                select(Currency).where(Currency.code == data.code, Currency.id != item_id)
+            )
+            if code_check.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Код валюты должен быть уникальным"
+                )
+        item.code = data.code
+    
+    if data.symbol is not None:
+        item.symbol = data.symbol
+    
+    await db.commit()
+    await db.refresh(item)
+    
+    return {
+        "id": item.id,
+        "code": item.code,
+        "symbol": item.symbol
+    }
+
+@app.delete("/api/currency/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_currency(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(Currency).where(Currency.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Валюта не найдена"
+        )
+    
+    # Проверка на использование в ценных бумагах
+    security_check = await db.execute(
+        select(Security).where(Security.currency_id == item_id).limit(1)
+    )
+    if security_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить валюту, так как она используется в ценных бумагах"
+        )
+    
+    # Проверка на использование в брокерских счетах
+    account_check = await db.execute(
+        select(BrokerageAccount).where(BrokerageAccount.currency_id == item_id).limit(1)
+    )
+    if account_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить валюту, так как она используется в брокерских счетах"
+        )
+    
+    # Проверка на использование в курсах валют
+    rate_check = await db.execute(
+        select(CurrencyRate).where(CurrencyRate.currency_id == item_id).limit(1)
+    )
+    if rate_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить валюту, так как она используется в курсах валют"
+        )
+    
+    await db.delete(item)
+    await db.commit()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# ==================== CRUD эндпоинты для Bank ====================
+
+@app.post("/api/bank", status_code=status.HTTP_201_CREATED)
+async def create_bank(
+    data: BankCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    try:
+        # Проверка даты лицензии
+        if data.license_expiry < date.today():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Срок действия лицензии не может быть в прошлом"
+            )
+        
+        new_bank = Bank(
+            name=data.name,
+            inn=data.inn,
+            ogrn=data.ogrn,
+            bik=data.bik,
+            license_expiry=data.license_expiry
+        )
+        db.add(new_bank)
+        await db.commit()
+        await db.refresh(new_bank)
+        
+        return {
+            "id": new_bank.id,
+            "name": new_bank.name,
+            "inn": new_bank.inn,
+            "ogrn": new_bank.ogrn,
+            "bik": new_bank.bik,
+            "license_expiry": new_bank.license_expiry
+        }
+    except IntegrityError as e:
+        await db.rollback()
+        error_msg = str(e).lower()
+        if "unique constraint" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Банк с такими реквизитами уже существует"
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ошибка уникальности данных"
+        )
+
+@app.put("/api/bank/{item_id}")
+async def update_bank(
+    item_id: int,
+    data: BankUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(Bank).where(Bank.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Банк не найден"
+        )
+    
+    if data.name is not None:
+        item.name = data.name
+    
+    if data.inn is not None:
+        item.inn = data.inn
+    
+    if data.ogrn is not None:
+        item.ogrn = data.ogrn
+    
+    if data.bik is not None:
+        item.bik = data.bik
+    
+    if data.license_expiry is not None:
+        if data.license_expiry < date.today():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Срок действия лицензии не может быть в прошлом"
+            )
+        item.license_expiry = data.license_expiry
+    
+    await db.commit()
+    await db.refresh(item)
+    
+    return {
+        "id": item.id,
+        "name": item.name,
+        "inn": item.inn,
+        "ogrn": item.ogrn,
+        "bik": item.bik,
+        "license_expiry": item.license_expiry
+    }
+
+@app.delete("/api/bank/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_bank(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+):
+    result = await db.execute(
+        select(Bank).where(Bank.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Банк не найден"
+        )
+    
+    # Проверка на использование в брокерских счетах
+    account_check = await db.execute(
+        select(BrokerageAccount).where(BrokerageAccount.bank_id == item_id).limit(1)
+    )
+    if account_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить банк, так как он используется в брокерских счетах"
+        )
+    
+    await db.delete(item)
+    await db.commit()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@app.get("/api/{table_name}")
+async def get_table_data(table_name: str, db: AsyncSession = Depends(get_db)):
+    model = TABLES.get(table_name)
+    if not model:
+        return {"error": f"Table not found (given={table_name})"}
+    print(f"before result model={model}")
+    result = await db.execute(select(model))
+    print(f"after result model={model}")
+    rows = result.scalars().all()
+
+    data = [
+        {k: v for k, v in row.__dict__.items() if k != "_sa_instance_state"}
+        for row in rows
+    ]
+    return data
 
 def run():
     # uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)

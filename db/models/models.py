@@ -584,8 +584,7 @@ class CurrencyRate(Base):
         "Currency",
         primaryjoin="foreign(CurrencyRate.currency_id) == remote(Currency.id)",
         foreign_keys=[currency_id],
-        lazy="joined",
-        back_populates="rates",  # опционально, если в Currency есть backref
+        lazy="joined", 
     )
 
     def __repr__(self) -> str:
