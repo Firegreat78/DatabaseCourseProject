@@ -4,22 +4,23 @@ from fastapi import FastAPI, Depends, HTTPException, status, Path, Response, Req
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError, DBAPIError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload, joinedload
 from db.session import get_db
-from core.config import PORT, HOST
+from core.config import *
 from db.auth import authenticate_staff, authenticate_user, create_access_token, get_password_hash, get_current_user
 from pydantic import BaseModel, EmailStr, field_validator, ConfigDict, Field
 from decimal import Decimal
-from typing import Optional, Union
+from typing import Optional, List
 from datetime import datetime, date
+from pydantic.types import conlist
 import re
 import logging
-
+import asyncpg
 from routers.routers import brokerage_accounts_router, charts_router
-
 from db.models.models import (
+    AdminRightsLevel,
     Bank,
     BrokerageAccount,
     BrokerageAccountHistory,
@@ -272,17 +273,15 @@ async def login_staff(
             detail="Неверный логин или пароль",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    elif staff.employment_status_id == 2:
+    elif staff.employment_status_id == EMPLOYMENT_STATUS_ID_BLOCKED:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Аккаунт заблокирован",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    
 
     access_token = create_access_token(
-        data={"sub": staff.login, "role": staff.rights_level, "staff_id": staff.id}
+        data={"sub": staff.login, "role": staff.rights_level_id, "staff_id": staff.id}
     )
 
     # Возвращаем ВСЕ обязательные поля из модели Token
@@ -290,62 +289,56 @@ async def login_staff(
         "access_token": access_token,
         "token_type": "bearer",
         "user_id": staff.id,  # Добавляем user_id (используем staff.id)
-        "role": staff.rights_level  # Добавляем role
+        "role": str(staff.rights_level_id)
     }
 
 
 @app.post("/api/register/user", status_code=status.HTTP_201_CREATED, summary="Регистрация пользователя")
 async def register_user(
-        form_data: UserRegisterRequest,  # ИСПРАВЛЕНО: form_data
-        db: AsyncSession = Depends(get_db)
+    form_data: UserRegisterRequest,
+    db: AsyncSession = Depends(get_db)
 ):
-    # 1. Проверяем, не занят ли логин
-    result_login = await db.execute(
-        select(User).where(User.login == form_data.login)
-    )
-    if result_login.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Логин уже занят"
-        )
-
-    # 2. Проверяем email
-    result_email = await db.execute(
-        select(User).where(User.email == form_data.email)
-    )
-    if result_email.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email уже зарегистрирован"
-        )
-
-    # 3. Хэшируем пароль
     hashed_password = get_password_hash(form_data.password)
-
-    # 4. Создаём пользователя
-    new_user = User(
-        login=form_data.login,
-        password=hashed_password,
-        email=form_data.email,
-        registration_date=datetime.now(timezone.utc).date(),
-        verification_status_id=1,
-        block_status_id=1,
+    result = await db.execute(
+        text("""
+            CALL register_user(:login, :password, :email, :user_id, :error_message)
+        """),
+        {
+            "login": form_data.login,
+            "password": hashed_password,
+            "email": form_data.email,
+            "user_id": None,
+            "error_message": None
+        }
     )
+    row = result.fetchone()
+    if row is None:
+        raise HTTPException(status_code=500, detail="Ошибка вызова процедуры регистрации")
 
-    db.add(new_user)
+    user_id = row[0]
+    error_message = row[1]
+
+    if error_message is not None:
+        if error_message == "Логин уже занят":
+            raise HTTPException(status_code=400, detail=error_message)
+        elif error_message == "Email уже зарегистрирован":
+            raise HTTPException(status_code=400, detail=error_message)
+        else:
+            raise HTTPException(status_code=500, detail=f"Ошибка регистрации: {error_message}")
+
     await db.commit()
-    await db.refresh(new_user)
 
     return {
         "message": "Пользователь успешно зарегистрирован",
-        "user_id": new_user.id,
-        "login": new_user.login,
-        "email": new_user.email,
+        "user_id": user_id,
+        "login": form_data.login,
+        "email": form_data.email,
     }
 
 
-@app.get("/api/user/balance")
+@app.get("/api/user/balance/{currency_id}")
 async def get_user_balance(
+        currency_id: int,
         current_user: dict = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
 ):
@@ -355,49 +348,48 @@ async def get_user_balance(
     user_id = current_user["id"]
 
     try:
-        query = text("SELECT calc_total_account_value(:user_id, 1) AS total_rub")
-        result = await db.execute(query, {"user_id": user_id})
+        query = text("SELECT get_total_account_value(:user_id, :currency_id) AS total_rub")
+        params = {
+            "currency_id": int(currency_id),
+            "user_id": user_id,
+        }
+        result = await db.execute(query, params)
         total_rub = result.scalar()
 
         return {
             "total_balance_rub": round(float(total_rub or 0), 2)
         }
     except Exception as e:
-        print(f"Ошибка расчёта баланса: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка сервера")
 
 
-@app.get("/api/currency/usd-rate")
-async def get_usd_rate(
-        current_user: dict = Depends(get_current_user),  # защита авторизацией
+
+@app.get("/api/rate_to_ruble/{currency_id}")
+async def rate_to_ruble(
+        currency_id,
         db: AsyncSession = Depends(get_db)
 ):
-    # Опционально: можно разрешить только пользователям (не сотрудникам)
-    if current_user["role"] != "user":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
-
     try:
-        query = text("SELECT get_currency_rate(2) AS usd_rate")
-        result = await db.execute(query)
-        usd_rate = result.scalar()
+        query = text("SELECT get_currency_rate(:currency_id) AS currency_rate")
+        result = await db.execute(query, params={"currency_id": currency_id})
+        currency_rate = result.scalar()
 
-        if usd_rate is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Курс USD не найден")
+        if currency_rate is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Курс не найден")
 
-        usd_rate_rounded = round(float(usd_rate), 4)
+        currency_rate_rounded = round(float(currency_rate), 4)
 
         return {
-            "currency": "USD",
-            "rate_to_rub": usd_rate_rounded,
-            "source": "get_currency_rate(2)"
+            "currency": f"id={currency_id}", # todo: return currency code
+            "rate_to_rub": currency_rate_rounded,
+            "source": f"get_currency_rate({currency_id})"
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Ошибка получения курса USD: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Ошибка сервера при получении курса")
+                            detail=f"Ошибка сервера при получении курса: {e}")
 
 
 @app.post("/api/passport", status_code=status.HTTP_201_CREATED)
@@ -409,51 +401,61 @@ async def create_passport(
     if current_user["role"] != "user":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
-    user_id = current_user["id"]
-
-    # Проверка: есть ли уже паспорт
-    existing = await db.execute(
-        select(Passport).where(Passport.user_id == user_id)
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Паспорт уже привязан к пользователю"
+    try:
+        result = await db.execute(
+            text("SELECT submit_passport(:user_id, :last_name, :first_name, :patronymic, "
+                 ":series, :number, :gender, :birth_date, :birth_place, :registration_place, "
+                 ":issue_date, :issued_by)"),
+            {
+                "user_id": current_user["id"],
+                "last_name": form_data.lastName,
+                "first_name": form_data.firstName,
+                "patronymic": form_data.middleName,
+                "series": form_data.series,
+                "number": form_data.number,
+                "gender": form_data.gender,
+                "birth_date": form_data.birthDate.date(),
+                "birth_place": form_data.birthPlace,
+                "registration_place": form_data.registrationPlace,
+                "issue_date": form_data.issueDate.date(),
+                "issued_by": form_data.issuedBy,
+            }
         )
 
-    passport = Passport(
-        user_id=user_id,
-        last_name=form_data.lastName,
-        first_name=form_data.firstName,
-        patronymic=form_data.middleName,
-        series=form_data.series,
-        number=form_data.number,
-        gender=form_data.gender,
-        birth_date=form_data.birthDate.date(),
-        birth_place=form_data.birthPlace,
-        registration_place=form_data.registrationPlace,
-        issue_date=form_data.issueDate.date(),
-        issued_by=form_data.issuedBy,
-        is_actual=True
-    )
+        passport_id = result.scalar_one()  # Функция возвращает ID созданного паспорта
 
-    db.add(passport)
+        await db.commit()
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+        return {
+            "message": "Паспорт успешно создан",
+            "passport_id": passport_id,
+            "user_id": current_user["id"]
+        }
 
-    user.verification_status_id = 3  # статус "Ожидает верификации"
+    except IntegrityError as exc:
+        # Обрабатываем ошибки, поднятые через RAISE EXCEPTION в submit_passport
+        orig_error = exc.orig
+        if isinstance(orig_error, asyncpg.exceptions.PostgresError):
+            error_message = str(orig_error).strip()
+            # Специфическая обработка известных сообщений
+            if "Паспорт уже привязан" in error_message:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Паспорт уже привязан к пользователю"
+                ) from exc
+            # Для остальных ошибок из функции возвращаем само сообщение
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_message
+            ) from exc
+        raise
 
-    await db.commit()
-    await db.refresh(passport)
-
-    return {
-        "message": "Паспорт успешно создан",
-        "passport_id": passport.id,
-        "user_id": passport.user_id
-    }
+    except Exception as exc:
+        # Любые другие неожиданные ошибки
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Не удалось создать паспорт"
+        ) from exc
 
 
 @app.get("/api/proposal/{proposal_id}")
@@ -564,8 +566,14 @@ async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
 @app.get("/api/broker/proposal/{proposal_id}")
 async def get_proposal_detail(
         proposal_id: int,
-        db: AsyncSession = Depends(get_db)
+        db: AsyncSession = Depends(get_db),
+        current_user: dict = Depends(get_current_user)
 ):
+    if current_user.get("role") != BROKER_ROLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещен: вы не являетесь брокером"
+        )
     # Явно загружаем все необходимые связи
     result = await db.execute(
         select(Proposal)
@@ -601,8 +609,11 @@ async def get_all_proposals(
         db: AsyncSession = Depends(get_db),
         current_user: dict = Depends(get_current_user)
 ):
-    if current_user.get("role") != "broker":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещен")
+    if current_user.get("role") != BROKER_ROLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Доступ запрещен: вы не являетесь брокером {current_user}"
+        )
 
     result = await db.execute(
         select(Proposal)
@@ -642,13 +653,14 @@ async def get_all_proposals(
 async def get_staff_profile(
         staff_id: int,
         db: AsyncSession = Depends(get_db),
+        current_user: dict = Depends(get_current_user)
 ):
-    result = await db.execute(
-        select(Staff)
-        .options(selectinload(Staff.employment_status))
-        .where(Staff.id == staff_id)
-    )
-
+    if current_user.get("type") != "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещен: вы не являетесь сотрудником"
+        )
+    result = await db.execute(select(Staff).where(Staff.id == staff_id))
     staff = result.scalar_one_or_none()
 
     if not staff:
@@ -657,8 +669,8 @@ async def get_staff_profile(
     return {
         "id": staff.id,
         "contract_number": staff.contract_number,
-        "employment_status": staff.employment_status_id if staff.employment_status else "Неизвестен",
-        "rights_level": staff.rights_level,
+        "employment_status": staff.employment_status_id, # todo: rename dict key to employment_status_id
+        "rights_level": staff.rights_level_id,
         "login": staff.login,
     }
 
@@ -667,7 +679,7 @@ class StaffUpdate(BaseModel):
     login: Optional[str] = None
     password: Optional[str] = None
     contract_number: Optional[str] = None
-    rights_level: Optional[str] = None  # Принимаем и int и str
+    rights_level: Optional[str] = None
     employment_status_id: Optional[int] = None
 
 @app.put("/api/staff/{staff_id}")
@@ -675,7 +687,13 @@ async def update_staff(
         staff_id: int,
         data: StaffUpdate,
         db: AsyncSession = Depends(get_db),
+        current_user: dict = Depends(get_current_user)
 ):
+    if current_user.get("type") != "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещен: вы не являетесь сотрудником"
+        )
     result = await db.execute(
         select(Staff).where(Staff.id == staff_id)
     )
@@ -684,7 +702,6 @@ async def update_staff(
     if not staff:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден")
 
-    # Проверяем уникальность логина только если логин меняется
     if data.login is not None and data.login != staff.login:
         result_login = await db.execute(
             select(Staff).where(Staff.login == data.login, Staff.id != staff_id)
@@ -706,8 +723,8 @@ async def update_staff(
         staff.contract_number = data.contract_number
 
     if data.rights_level is not None:
-        # Убеждаемся, что права хранятся как строка
-        staff.rights_level = str(data.rights_level)
+        # Обновляем ID уровня прав (целое число)
+        staff.rights_level_id = int(data.rights_level)  # Приводим к int, т.к. колонка Integer
 
     if data.employment_status_id is not None:
         staff.employment_status_id = data.employment_status_id
@@ -734,51 +751,67 @@ class StaffCreate(BaseModel):
     summary="Создание сотрудника"
 )
 async def register_staff(
-        form_data: StaffCreate,
-        db: AsyncSession = Depends(get_db)
+    form_data: StaffCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
-    # 1. Проверяем логин и номер договора
-    result_login = await db.execute(
-        select(Staff).where(Staff.login == form_data.login)
-    )
-    if result_login.scalar_one_or_none():
+    # Проверка прав доступа остаётся на Python-стороне
+    if current_user.get("role") not in {MEGAADMIN_ROLE, ADMIN_ROLE}:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Логин уже занят"
-        )
-    
-    result_number = await db.execute(
-        select(Staff).where(Staff.contract_number == form_data.contract_number)
-    )
-    if result_number.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Номер договора уже занят"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещен: вы не являетесь администратором"
         )
 
-    # 2. Хэшируем пароль
+    # Хэшируем пароль на Python (безопасно)
     hashed_password = get_password_hash(form_data.password)
 
-    # 3. Создаём сотрудника
-    new_staff = Staff(
-        login=form_data.login,
-        password=hashed_password,
-        contract_number=form_data.contract_number,
-        rights_level=form_data.rights_level,
-        employment_status_id=form_data.employment_status_id,
+    # Вызываем процедуру
+    result = await db.execute(
+        text("""
+            CALL register_staff(
+                :login,
+                :password,
+                :contract_number,
+                :rights_level_id,
+                :employment_status_id,
+                :staff_id OUTPUT,
+                :error_message OUTPUT
+            )
+        """),
+        {
+            "login": form_data.login,
+            "password": hashed_password,
+            "contract_number": form_data.contract_number,
+            "rights_level_id": int(form_data.rights_level),
+            "employment_status_id": form_data.employment_status_id,
+        }
     )
 
-    db.add(new_staff)
-    await db.commit()
-    await db.refresh(new_staff)
+    row = result.fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Ошибка вызова процедуры создания сотрудника"
+        )
 
-    # 4. Возвращаем результат
+    staff_id      = row[0]
+    error_message = row[1]
+
+    if error_message is not None:
+        if error_message == "Логин уже занят" or error_message == "Номер договора уже занят":
+            raise HTTPException(status_code=400, detail=error_message)
+        else:
+            raise HTTPException(status_code=500, detail=f"Ошибка создания сотрудника: {error_message}")
+
+    # Коммит (на всякий случай, хотя INSERT внутри процедуры уже должен быть закоммичен)
+    await db.commit()
+
     return {
         "message": "Сотрудник успешно создан",
-        "staff_id": new_staff.id,
-        "login": new_staff.login,
-        "rights_level": new_staff.rights_level,
-        "employment_status_id": new_staff.employment_status_id,
+        "staff_id": staff_id,
+        "login": form_data.login,
+        "rights_level": int(form_data.rights_level),
+        "employment_status_id": form_data.employment_status_id,
     }
 
 
@@ -786,6 +819,7 @@ async def register_staff(
 async def get_user_passport(
         user_id: int,
         db: AsyncSession = Depends(get_db),
+        current_user: dict = Depends(get_current_user)
 ):
     result = await db.execute(
         select(Passport, User.verification_status_id)
@@ -824,14 +858,23 @@ async def get_user_passport(
 async def delete_user_passport(
         user_id: int,
         db: AsyncSession = Depends(get_db),
+        current_user: dict = Depends(get_current_user)
 ):
+    if current_user.get("role") != VERIFIER_ROLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещен: вы не являетесь верификатором"
+        )
     result = await db.execute(
         select(Passport).where(Passport.user_id == user_id, Passport.is_actual == True)
     )
     passport = result.scalar_one_or_none()
 
     if not passport:
-        raise HTTPException(status_code=404, detail="Паспорт не найден")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Паспорт не найден"
+        )
 
     await db.delete(passport)
     await db.commit()
@@ -881,44 +924,100 @@ async def create_brokerage_account(
         db: AsyncSession = Depends(get_db)
 ):
     if current_user["role"] != "user":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Доступ запрещён"
+        )
+    try:
+        # Вызываем серверную функцию
+        result = await db.execute(
+            text("SELECT add_brokerage_account(:user_id, :bank_id, :currency_id)"),
+            {
+                "user_id": current_user["id"],
+                "bank_id": account_data.bank_id,
+                "currency_id": account_data.currency_id
+            }
+        )
+
+        account_id = result.scalar_one()  # ID нового счёта
+
+        # Получаем данные для ответа (банк и валюта)
+        bank_result = await db.execute(select(Bank).where(Bank.id == account_data.bank_id))
+        bank = bank_result.scalar_one()
+
+        currency_result = await db.execute(select(Currency).where(Currency.id == account_data.currency_id))
+        currency = currency_result.scalar_one()
+
+        await db.commit()
+
+        return {
+            "account_id": account_id,
+            "balance": 0.0,
+            "bank_id": bank.id,
+            "bank_name": bank.name,
+            "bik": bank.bik,
+            "currency_id": currency.id,
+            "currency_symbol": currency.symbol,
+            "user_id": current_user["id"]
+        }
+
+    except IntegrityError as exc:
+        await db.rollback()
+        orig_msg = str(exc.orig).strip() if exc.orig else ""
+        if "Банк с ID" in orig_msg:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Банк не найден")
+        if "Валюта с ID" in orig_msg:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Валюта не найдена или архивирована")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=orig_msg or "Ошибка при создании счёта")
+
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Внутренняя ошибка сервера: {exc}")
+
+
+@app.delete("/api/brokerage-accounts/{brokerage_account_id}")
+async def delete_brokerage_account(
+        brokerage_account_id,
+        current_user: dict = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+):
+    if current_user["role"] != "user":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
-    # Проверяем банк
-    result = await db.execute(select(Bank).where(Bank.id == account_data.bank_id))
-    bank = result.scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Банк не найден")
+    try:
+        # Вызываем серверную функцию — она сделает все проверки и удаление
+        result = await db.execute(
+            text("SELECT delete_brokerage_account(:account_id, :user_id)"),
+            {
+                "account_id": int(brokerage_account_id),
+                "user_id": current_user["id"]
+            }
+        )
 
-    # Проверяем валюту
-    result = await db.execute(select(Currency).where(Currency.id == account_data.currency_id))
-    currency = result.scalar_one_or_none()
-    if not currency:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Валюта не найдена")
+        # Функция возвращает VOID, поэтому scalar_one() вернёт None при успехе
+        result.scalar_one()
 
-    # Создаём счёт с балансом 0
-    new_account = BrokerageAccount(
-        balance=Decimal("0.00"),
-        bank_id=bank.id,
-        bik=bank.bik,
-        inn=" ",
-        currency_id=currency.id,
-        user_id=current_user["id"]
-    )
+        await db.commit()
 
-    db.add(new_account)
-    await db.commit()
-    await db.refresh(new_account)
+        return {
+            "detail": "Брокерский счёт успешно удалён"
+        }
 
-    return {
-        "account_id": new_account.id,
-        "balance": float(new_account.balance),
-        "bank_id": bank.id,
-        "bank_name": bank.name,
-        "bik": bank.bik,
-        "currency_id": currency.id,
-        "currency_symbol": currency.symbol,
-        "user_id": new_account.user_id
-    }
+    except IntegrityError as exc:
+        await db.rollback()
+        orig_msg = str(exc.orig).strip() if exc.orig else ""
+
+        if "не найден" in orig_msg or "не принадлежит" in orig_msg:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Брокерский счёт не найден или не принадлежит вам")
+        if "ненулевым балансом" in orig_msg:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя удалить брокерский счёт с ненулевым балансом")
+        # Любая другая ошибка из функции
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=orig_msg or "Ошибка при удалении счёта")
+
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Внутренняя ошибка сервера: {exc}")
+
 
 
 class StockOut(BaseModel):
@@ -932,6 +1031,7 @@ class StockOut(BaseModel):
         from_attributes = True
 
 
+# todo: move validation to postgres triggers
 class StockCreate(BaseModel):
     ticker: str
     isin: str
@@ -971,69 +1071,66 @@ class StockCreate(BaseModel):
         return v
 
 
-@app.post("/api/exchange/stocks", status_code=201)
+@app.post("/api/exchange/stocks", status_code=status.HTTP_201_CREATED)
 async def create_stock(
     data: StockCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    currency = await db.scalar(
-        select(Currency).where(Currency.id == data.currency_id)
-    )
-    if not currency:
-        raise HTTPException(404, "Валюта не найдена")
-
-    security = Security(
-        name=data.ticker,
-        isin=data.isin,
-        lot_size=Decimal(data.lot_size),
-        dividend_payment=data.has_dividends,
-        currency_id=data.currency_id,
-    )
-
-    db.add(security)
-
     try:
-        # Flush = executes INSERT
-        await db.flush()
-
-        price = PriceHistory(
-            security_id=security.id,
-            date=date.today(),
-            price=data.price,
+        result = await db.execute(
+            text("""
+                SELECT add_security(
+                    :ticker,
+                    :isin,
+                    :lot_size,
+                    :price,
+                    :currency_id,
+                    :has_dividends
+                )
+            """),
+            {
+                "ticker": data.ticker,
+                "isin": data.isin,
+                "lot_size": Decimal(data.lot_size),
+                "price": data.price,
+                "currency_id": data.currency_id,
+                "has_dividends": data.has_dividends,
+            }
         )
-        db.add(price)
+
+        security_id = result.scalar_one()  # add_security возвращает ID ценной бумаги
 
         await db.commit()
 
-    except IntegrityError as e:
+        return {
+            "id": security_id,
+            "ticker": data.ticker,
+            "isin": data.isin,
+        }
+
+    except IntegrityError as exc:
         await db.rollback()
-        msg = str(e.orig)
+        orig_msg = str(exc.orig).strip() if exc.orig else ""
 
-        logger.warning("IntegrityError while creating stock: %s", msg)
+        logger.warning("Ошибка при добавлении ценной бумаги: %s", orig_msg)
 
-        if "uq_security_isin" in msg:
+        # Все проверки теперь в триггере и функции — сообщения из RAISE EXCEPTION
+        if "Размер лота" in orig_msg:
+            raise HTTPException(400, "Размер лота должен быть больше нуля")
+        if "Валюта с ID" in orig_msg:
+            raise HTTPException(404, "Валюта не найдена")
+        if "ISIN" in orig_msg and "уже существует" in orig_msg:
             raise HTTPException(400, "ISIN уже существует")
-
-        if "uq_security_name" in msg:
+        if "тикером" in orig_msg and "уже существует" in orig_msg:
             raise HTTPException(400, "Тикер уже существует")
 
-        raise HTTPException(400, "Нарушение уникальности данных")
+        # На всякий случай — общее сообщение
+        raise HTTPException(400, orig_msg or "Нарушение ограничений данных")
 
-    except DBAPIError as e:
+    except Exception as exc:
         await db.rollback()
-        logger.exception("Database error")
-        raise HTTPException(500, "Ошибка базы данных")
-
-    except Exception as e:
-        await db.rollback()
-        logger.exception("Unexpected error")
+        logger.exception("Неожиданная ошибка при создании ценной бумаги")
         raise HTTPException(500, "Внутренняя ошибка сервера")
-
-    return {
-        "id": security.id,
-        "ticker": security.name,
-        "isin": security.isin,
-    }
 
 class ProcessProposalRequest(BaseModel):
     verify: bool
@@ -1046,13 +1143,10 @@ async def process_proposal(
         current_user: dict = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
 ):
-    print(f"DEBUG: current_user = {current_user}")  # Отладочная информация
-
     payload = current_user.get("payload")
     staff_id = payload.get("staff_id")
 
     if not staff_id:
-        print(f"DEBUG: No staff_id found in token: {current_user}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Не удалось определить ID сотрудника из токена"
@@ -1073,9 +1167,6 @@ async def process_proposal(
     verify = request_data.verify if request_data else False
 
     try:
-        print(f"DEBUG: Calling process_proposal with staff_id={staff_id}, proposal_id={proposal_id}, verify={verify}")
-
-        # Вызов функции process_proposal из PostgreSQL
         query = text("SELECT process_proposal(:staff_id, :proposal_id, :verify)")
         await db.execute(
             query,
@@ -1097,7 +1188,6 @@ async def process_proposal(
     except Exception as e:
         await db.rollback()
         error_msg = str(e)
-        print(f"ERROR in process_proposal: {error_msg}")
 
         # Парсинг сообщения об ошибке из PostgreSQL
         if "не найден" in error_msg.lower():
@@ -1111,7 +1201,7 @@ async def process_proposal(
 
         raise HTTPException(
             status_code=status_code,
-            detail=error_msg if status_code != 500 else "Внутренняя ошибка сервера при обработке заявки"
+            detail=error_msg if status_code != status.HTTP_500_INTERNAL_SERVER_ERROR else "Внутренняя ошибка сервера при обработке заявки"
         )
     
 @app.patch("/api/proposal/{proposal_id}/cancel")
@@ -1120,21 +1210,12 @@ async def cancel_proposal(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Отмена заявки клиентом.
-    Клиент может отменить только свои заявки со статусом "ожидание" (status_id=3).
-    Используется сотрудник с правами уровня 5 для системной отмены.
-    """
-    
-    # Проверяем, что это клиент (пользователь)
     if current_user["role"] != "user":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Только клиенты могут отменять свои заявки"
         )
-    
     user_id = current_user["id"]
-    
     try:
         # 1. Проверяем, что заявка существует и принадлежит пользователю
         result = await db.execute(
@@ -1147,51 +1228,21 @@ async def cancel_proposal(
             )
         )
         proposal = result.scalar_one_or_none()
-        
         if not proposal:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Заявка не найдена или у вас нет прав для её отмены"
             )
-        
-        # 2. Проверяем статус заявки (только статус "ожидание" можно отменить)
-        if proposal.status_id != 3:  # 3 - статус "ожидание"
-            current_status = proposal.status.status if proposal.status else f"ID={proposal.status_id}"
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Невозможно отменить заявку со статусом '{current_status}'. "
-                       f"Отмена возможна только для заявок в статусе 'ожидание'."
-            )
-        
-        # 3. Находим сотрудника с правами уровня 5 (системный сотрудник)
-        result = await db.execute(
-            select(Staff).where(Staff.rights_level == '5')
-        )
-        system_staff = result.scalar_one_or_none()
-        
-        if not system_staff:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Системный сотрудник (права уровня 5) не найден. Обратитесь в поддержку."
-            )
-        
-        staff_id = system_staff.id
-        
-        print(f"DEBUG: Cancelling proposal {proposal_id} by system staff {staff_id}")
-        
-        # 4. Вызываем PostgreSQL функцию process_proposal для отмены (verify=False)
         query = text("SELECT process_proposal(:staff_id, :proposal_id, :verify)")
         await db.execute(
             query,
             {
-                "staff_id": staff_id,
+                "staff_id": SYSTEM_STAFF_ID,
                 "proposal_id": proposal_id,
-                "verify": False  # False означает отклонение/отмену
+                "verify": False
             }
         )
         await db.commit()
-        
-        # 5. Получаем обновленную информацию о заявке
         result = await db.execute(
             select(Proposal)
             .options(joinedload(Proposal.status))
@@ -1211,9 +1262,6 @@ async def cancel_proposal(
     except Exception as e:
         await db.rollback()
         error_msg = str(e)
-        print(f"ERROR in cancel_proposal: {error_msg}")
-        
-        # Парсинг сообщения об ошибке из PostgreSQL
         if "не найден" in error_msg.lower():
             status_code = status.HTTP_404_NOT_FOUND
         elif "уже обработана" in error_msg.lower() or "недопустимый статус" in error_msg.lower():
@@ -1222,7 +1270,6 @@ async def cancel_proposal(
             status_code = status.HTTP_400_BAD_REQUEST
         else:
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        
         raise HTTPException(
             status_code=status_code,
             detail=error_msg if status_code != 500 else "Внутренняя ошибка сервера при отмене заявки"
@@ -1326,14 +1373,14 @@ async def update_user(
 
 
 
-@app.post("/api/user/{user_id}/verify_passport")  # Новый эндпоинт
+@app.post("/api/user/{user_id}/verify_passport")
 async def call_verify_user_passport(
     user_id: int,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Вызывает PostgreSQL функцию verify_user_passport.
-    Предполагается, что сначала был загружен ID паспорта для этого user_id.
+    Вызывает PostgreSQL процедуру verify_user_passport.
+    Создаёт депозитарный счёт и балансы при успешной верификации паспорта.
     """
     # Найдём ID паспорта пользователя
     passport_result = await db.execute(
@@ -1347,18 +1394,39 @@ async def call_verify_user_passport(
 
     passport_id = passport_row[0]
 
-    # Вызов вашей функции verify_user_passport
     try:
-        await db.execute(
-            text("SELECT verify_user_passport(:passport_id)"),
+        result = await db.execute(
+            text("""
+                CALL public.verify_user_passport(
+                    :passport_id,
+                    :success OUTPUT,
+                    :error_message OUTPUT
+                )
+            """),
             {"passport_id": passport_id}
         )
-        await db.commit()  # Зафиксируйте изменения, если внутри функции были INSERT'ы
+
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        success       = row[0]
+        error_message = row[1]
+
+        if not success:
+            raise Exception(error_message or "Ошибка верификации")
+
+        await db.commit()
+
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    return {"message": "Функция verify_user_passport успешно выполнена"}
+    return {
+        "message": "Верификация паспорта успешно завершена",
+        "user_id": user_id,
+        "passport_id": passport_id
+    }
     
 @app.get("/api/exchange/stocks")
 async def get_stocks(db: AsyncSession = Depends(get_db)):
@@ -1462,7 +1530,7 @@ class BankUpdate(BaseModel):
 async def create_employment_status(
     data: EmploymentStatusCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     try:
         new_status = EmploymentStatus(
@@ -1488,7 +1556,7 @@ async def update_employment_status(
     item_id: int,
     data: EmploymentStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(EmploymentStatus).where(EmploymentStatus.id == item_id)
@@ -1516,7 +1584,7 @@ async def update_employment_status(
 async def delete_employment_status(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(EmploymentStatus).where(EmploymentStatus.id == item_id)
@@ -1550,7 +1618,7 @@ async def delete_employment_status(
 async def create_verification_status(
     data: VerificationStatusCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: delete
 ):
     try:
         new_status = VerificationStatus(
@@ -1576,7 +1644,7 @@ async def update_verification_status(
     item_id: int,
     data: VerificationStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: delete
 ):
     result = await db.execute(
         select(VerificationStatus).where(VerificationStatus.id == item_id)
@@ -1604,7 +1672,7 @@ async def update_verification_status(
 async def delete_verification_status(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(VerificationStatus).where(VerificationStatus.id == item_id)
@@ -1638,7 +1706,7 @@ async def delete_verification_status(
 async def create_user_restriction_status(
     data: UserRestrictionStatusCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     try:
         new_status = UserRestrictionStatus(
@@ -1664,7 +1732,7 @@ async def update_user_restriction_status(
     item_id: int,
     data: UserRestrictionStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(UserRestrictionStatus).where(UserRestrictionStatus.id == item_id)
@@ -1692,7 +1760,7 @@ async def update_user_restriction_status(
 async def delete_user_restriction_status(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(UserRestrictionStatus).where(UserRestrictionStatus.id == item_id)
@@ -1726,7 +1794,7 @@ async def delete_user_restriction_status(
 async def create_proposal_status(
     data: ProposalStatusCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     try:
         new_status = ProposalStatus(
@@ -1752,7 +1820,7 @@ async def update_proposal_status(
     item_id: int,
     data: ProposalStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(ProposalStatus).where(ProposalStatus.id == item_id)
@@ -1780,7 +1848,7 @@ async def update_proposal_status(
 async def delete_proposal_status(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(ProposalStatus).where(ProposalStatus.id == item_id)
@@ -1814,7 +1882,7 @@ async def delete_proposal_status(
 async def create_proposal_type(
     data: ProposalTypeCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     try:
         new_type = ProposalType(
@@ -1840,7 +1908,7 @@ async def update_proposal_type(
     item_id: int,
     data: ProposalTypeUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(ProposalType).where(ProposalType.id == item_id)
@@ -1868,7 +1936,7 @@ async def update_proposal_type(
 async def delete_proposal_type(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(ProposalType).where(ProposalType.id == item_id)
@@ -1902,7 +1970,7 @@ async def delete_proposal_type(
 async def create_depository_account_operation_type(
     data: DepositoryAccountOperationTypeCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     try:
         new_type = DepositoryAccountOperationType(
@@ -1928,7 +1996,7 @@ async def update_depository_account_operation_type(
     item_id: int,
     data: DepositoryAccountOperationTypeUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)
 ):
     result = await db.execute(
         select(DepositoryAccountOperationType).where(DepositoryAccountOperationType.id == item_id)
@@ -1956,7 +2024,7 @@ async def update_depository_account_operation_type(
 async def delete_depository_account_operation_type(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user) # todo: apply unauth
 ):
     result = await db.execute(
         select(DepositoryAccountOperationType).where(DepositoryAccountOperationType.id == item_id)
@@ -1990,7 +2058,7 @@ async def delete_depository_account_operation_type(
 async def create_brokerage_account_operation_type(
     data: BrokerageAccountOperationTypeCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user) # todo: apply unauth
 ):
     try:
         new_type = BrokerageAccountOperationType(
@@ -2016,7 +2084,7 @@ async def update_brokerage_account_operation_type(
     item_id: int,
     data: BrokerageAccountOperationTypeUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user) # todo: apply unauth
 ):
     result = await db.execute(
         select(BrokerageAccountOperationType).where(BrokerageAccountOperationType.id == item_id)
@@ -2044,7 +2112,7 @@ async def update_brokerage_account_operation_type(
 async def delete_brokerage_account_operation_type(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)
 ):
     result = await db.execute(
         select(BrokerageAccountOperationType).where(BrokerageAccountOperationType.id == item_id)
@@ -2078,7 +2146,7 @@ async def delete_brokerage_account_operation_type(
 async def create_currency(
     data: CurrencyCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user) # todo: apply unauth
 ):
     try:
         new_currency = Currency(
@@ -2111,7 +2179,7 @@ async def update_currency(
     item_id: int,
     data: CurrencyUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user) # todo: apply unauth
 ):
     result = await db.execute(
         select(Currency).where(Currency.id == item_id)
@@ -2123,7 +2191,7 @@ async def update_currency(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Валюта не найдена"
         )
-    
+
     if data.code is not None:
         # Проверка уникальности кода валюты
         if data.code != item.code:
@@ -2142,7 +2210,7 @@ async def update_currency(
     
     await db.commit()
     await db.refresh(item)
-    
+
     return {
         "id": item.id,
         "code": item.code,
@@ -2153,7 +2221,7 @@ async def update_currency(
 async def delete_currency(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)  # todo: add unauth
 ):
     result = await db.execute(
         select(Currency).where(Currency.id == item_id)
@@ -2207,7 +2275,7 @@ async def delete_currency(
 async def create_bank(
     data: BankCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user) # todo: apply unauth
 ):
     try:
         # Проверка даты лицензии
@@ -2254,7 +2322,7 @@ async def update_bank(
     item_id: int,
     data: BankUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user)
 ):
     result = await db.execute(
         select(Bank).where(Bank.id == item_id)
@@ -2303,7 +2371,7 @@ async def update_bank(
 async def delete_bank(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Убрана проверка require_admin
+    current_user: dict = Depends(get_current_user) # todo: apply unauth
 ):
     result = await db.execute(
         select(Bank).where(Bank.id == item_id)
@@ -2331,14 +2399,180 @@ async def delete_bank(
     
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+
+class TotalSumFromLotSizeResponse(BaseModel):
+    total_sum: float
+    currency_symbol: str
+
+@app.get(
+    "/api/get_lot_price/{security_id}/{lot_amount}",
+    response_model=TotalSumFromLotSizeResponse
+)
+async def get_lot_price(
+    security_id: int,
+    lot_amount: int,
+    db: AsyncSession = Depends(get_db)
+):
+    if lot_amount <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество лотов должно быть положительным")
+
+    # 1. Получаем общую стоимость через функцию PostgreSQL
+    price_query = text(
+        "SELECT public.get_lot_price(:security_id, :lot_amount) AS total_sum"
+    )
+    price_result = await db.execute(
+        price_query,
+        {"security_id": security_id, "lot_amount": lot_amount}
+    )
+    price_row = price_result.fetchone()
+
+    if price_row is None or price_row.total_sum is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Цена не найдена или бумага недоступна")
+
+    total_sum_value = price_row.total_sum
+
+    # 2. Получаем символ валюты отдельным запросом
+    currency_query = text(
+        """
+        SELECT c."Символ" AS currency_symbol
+        FROM public."Список ценных бумаг" s
+        JOIN public."Список валют" c ON s."ID валюты" = c."ID валюты"
+        WHERE s."ID ценной бумаги" = :security_id
+        """
+    )
+    currency_result = await db.execute(
+        currency_query,
+        {"security_id": security_id}
+    )
+    currency_row = currency_result.fetchone()
+
+    if currency_row is None or currency_row.currency_symbol is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Валюта ценной бумаги не найдена")
+
+    return TotalSumFromLotSizeResponse(
+        total_sum=float(total_sum_value),
+        currency_symbol=currency_row.currency_symbol
+    )
+
+class CurrencyBase(BaseModel):
+    code: str = Field(..., min_length=3, max_length=3)
+    symbol: str = Field(..., min_length=1, max_length=10)
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        v = v.upper()
+        if not re.fullmatch(r"[A-Z]{3}", v):
+            raise ValueError("Код валюты должен состоять из 3 латинских букв")
+        return v
+
+
+class CurrencyResponse(BaseModel):
+    id: int
+    code: str
+    symbol: str
+    archived: bool
+    rate_to_ruble: float
+
+    class Config:
+        from_attributes = True  # Для совместимости с SQLAlchemy 2.x
+
+@app.get("/api/currencies", response_model=List[CurrencyResponse])
+async def get_currencies(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user.get("type") != "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён: требуется роль сотрудника"
+        )
+
+    result = await db.execute(select(Currency))
+    currencies = result.scalars().all()
+
+    return currencies
+
+
+class RightsLevelOut(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        from_attributes = True
+
+
+class EmploymentStatusOut(BaseModel):
+    id: int
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+class RightsLevelsResponse(BaseModel):
+    data: List[RightsLevelOut]
+
+    @field_validator('data')
+    @classmethod
+    def check_not_empty(cls, v: List[RightsLevelOut]) -> List[RightsLevelOut]:
+        if len(v) == 0:
+            raise ValueError('Список уровней прав пуст')
+        return v
+
+
+class EmploymentStatusResponse(BaseModel):
+    data: List[EmploymentStatusOut]
+
+    @field_validator('data')
+    @classmethod
+    def check_not_empty(cls, v: List[EmploymentStatusOut]) -> List[EmploymentStatusOut]:
+        if len(v) == 0:
+            raise ValueError('Список статусов трудоустройства пуст')
+        return v
+
+@app.get("/api/rights_levels")
+async def get_rights_levels(
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(AdminRightsLevel).order_by(AdminRightsLevel.id))
+    levels = result.scalars().all()
+    return levels
+
+
+@app.get("/api/employment_statuses")
+async def get_employment_statuses(
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(EmploymentStatus).order_by(EmploymentStatus.id))
+    statuses = result.scalars().all()
+    return statuses
+
+@app.get("/api/verification_statuses")
+async def get_verification_statuses(
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(VerificationStatus).order_by(VerificationStatus.id))
+    statuses = result.scalars().all()
+    return statuses
+
+@app.get("/api/user_block_statuses")
+async def get_user_block_statuses(
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(UserRestrictionStatus).order_by(UserRestrictionStatus.id))
+    statuses = result.scalars().all()
+    return statuses
+
 @app.get("/api/{table_name}")
 async def get_table_data(table_name: str, db: AsyncSession = Depends(get_db)):
     model = TABLES.get(table_name)
     if not model:
-        return {"error": f"Table not found (given={table_name})"}
-    print(f"before result model={model}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Table '{table_name}' not found in tables: {TABLES}"
+        )
     result = await db.execute(select(model))
-    print(f"after result model={model}")
     rows = result.scalars().all()
 
     data = [

@@ -16,6 +16,16 @@ class Base(DeclarativeBase):
     registry = reg
 
 
+class AdminRightsLevel(Base):
+    __tablename__ = "Уровень прав админа"
+
+    id = Column("ID уровня прав", Integer, primary_key=True, nullable=False, autoincrement=True)
+    rights_level = Column("Уровень прав", String(30), nullable=False)
+
+    def __repr__(self):
+        return f"<AdminRightsLevel(id={self.id}, rights_level={self.rights_level})>"
+
+
 class UserRestrictionStatus(Base):
     __tablename__ = "Статус блока пользователя"
 
@@ -98,9 +108,10 @@ class Currency(Base):
     id = Column("ID валюты", Integer, primary_key=True, nullable=False)
     code = Column("Код", String(3), nullable=False, unique=True)
     symbol = Column("Символ", String(10), nullable=False)
+    is_archived = Column("Статус архивации", Boolean, nullable=False)
 
     def __repr__(self):
-        return f"<Currency(id={self.id}, code='{self.code}', symbol='{self.symbol}')>"
+        return f"<Currency(id={self.id}, code='{self.code}', symbol='{self.symbol}', is_archived={self.is_archived})>"
 
 
 class EmploymentStatus(Base):
@@ -152,10 +163,11 @@ class Staff(Base):
     contract_number = Column("Номер трудового договора", String(40), nullable=False)
     login = Column("Логин", String(30), nullable=False)
     password = Column("Пароль", String(60), nullable=False)
-    rights_level = Column("Уровень прав", String(30), nullable=False)
     employment_status_id = Column("ID статуса трудоустройства", Integer, ForeignKey("Статус трудоустройства.ID статуса трудоустройства", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
+    rights_level_id = Column("ID уровня прав", Integer, ForeignKey("Уровень прав админа.ID уровня прав", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
 
     employment_status = relationship("EmploymentStatus", backref="staff_members")
+    rights_level = relationship("AdminRightsLevel", backref="staff_members")
 
     def __repr__(self):
         return f"<Staff(id={self.id}, contract_number='{self.contract_number}', login='{self.login}', rights_level='{self.rights_level}', employment_status_id={self.employment_status_id})>"
@@ -163,7 +175,6 @@ class Staff(Base):
 class Proposal(Base):
     __tablename__ = "Предложение"
 
-    # 🔑 COMPOSITE PRIMARY KEY
     id = Column(
         "ID предложения",
         Integer,
@@ -240,12 +251,11 @@ class Proposal(Base):
         backref="proposals",
     )
 
-    # ✅ FIX: Add primaryjoin to explicitly define the join condition
     brokerage_account_operation = relationship(
         "BrokerageAccountHistory",
         backref="proposals",
         foreign_keys=[brokerage_account_history_id],
-        primaryjoin="Proposal.brokerage_account_history_id == BrokerageAccountHistory.id"  # <-- Explicit join condition
+        primaryjoin="Proposal.brokerage_account_history_id == BrokerageAccountHistory.id"
     )
 
     security = relationship("Security", backref="proposals")

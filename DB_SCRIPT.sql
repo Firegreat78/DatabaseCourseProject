@@ -1,8 +1,4 @@
--- =========================
--- 1) ТАБЛИЦЫ
--- =========================
-
-DO $$ 
+DO $$
 DECLARE
     r RECORD;
 BEGIN
@@ -17,23 +13,30 @@ BEGIN
     END LOOP;
 END $$;
 
--- Удаляет ВСЕ функции во всех схемах текущей базы
 DO $$
 DECLARE
     r RECORD;
 BEGIN
+    -- Удаляем все функции и процедуры во всех пользовательских схемах
     FOR r IN (
-        SELECT format('%I.%I(%s)',
-                      n.nspname,
-                      p.proname,
-                      pg_get_function_identity_arguments(p.oid)) AS func_sig
+        SELECT format(
+                   '%I.%I(%s)',
+                   n.nspname,
+                   p.proname,
+                   pg_get_function_identity_arguments(p.oid)
+               ) AS routine_sig,
+               CASE WHEN p.prokind = 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END AS routine_type
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
           AND n.nspname NOT LIKE 'pg_toast%'
     )
     LOOP
-        EXECUTE 'DROP FUNCTION IF EXISTS ' || r.func_sig || ' CASCADE';
+        IF r.routine_type = 'PROCEDURE' THEN
+            EXECUTE 'DROP PROCEDURE IF EXISTS ' || r.routine_sig || ' CASCADE';
+        ELSE
+            EXECUTE 'DROP FUNCTION IF EXISTS ' || r.routine_sig || ' CASCADE';
+        END IF;
     END LOOP;
 END $$;
 
@@ -129,40 +132,27 @@ CREATE TABLE "Статус верификации"
 WITH (autovacuum_enabled=true);
 ALTER TABLE "Статус верификации" ADD CONSTRAINT "Unique_Identifier4" PRIMARY KEY ("ID статуса верификации");
 
--- Table Персонал
-
 CREATE TABLE "Персонал"
 (
   "ID сотрудника" Serial NOT NULL,
   "Номер трудового договора" Character varying(40) NOT NULL UNIQUE,
   "Логин" Character varying(30) NOT NULL UNIQUE,
   "Пароль" Character varying(60) NOT NULL,
-  "Уровень прав" Character varying(30) NOT NULL,
-  "ID статуса трудоустройства" Integer NOT NULL
+  "ID статуса трудоустройства" Integer NOT NULL,
+  "ID уровня прав" Integer NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
+WITH (autovacuum_enabled=true);
+CREATE INDEX "IX_Relationship34" ON "Персонал" ("ID статуса трудоустройства");
+ALTER TABLE "Персонал" ADD CONSTRAINT "Unique_Identifier10" PRIMARY KEY ("ID сотрудника");
 
-CREATE INDEX "IX_Relationship34" ON "Персонал" ("ID статуса трудоустройства")
-;
-
-ALTER TABLE "Персонал" ADD CONSTRAINT "Unique_Identifier10" PRIMARY KEY ("ID сотрудника")
-;
-
--- Table Статус трудоустройства
 
 CREATE TABLE "Статус трудоустройства"
 (
   "ID статуса трудоустройства" Serial NOT NULL,
   "Статус трудоустройства" Character varying(120) NOT NULL
 )
-WITH (
-  autovacuum_enabled=true)
-;
-
-ALTER TABLE "Статус трудоустройства" ADD CONSTRAINT "Unique_Identifier7" PRIMARY KEY ("ID статуса трудоустройства")
-;
+WITH (autovacuum_enabled=true);
+ALTER TABLE "Статус трудоустройства" ADD CONSTRAINT "Unique_Identifier7" PRIMARY KEY ("ID статуса трудоустройства");
 
 -- Table Депозитарный счёт
 
@@ -177,7 +167,6 @@ WITH (autovacuum_enabled=true);
 ALTER TABLE "Депозитарный счёт" ADD CONSTRAINT "Unique_Identifier13" PRIMARY KEY ("ID депозитарного счёта","ID пользователя");
 ALTER TABLE "Депозитарный счёт" ADD CONSTRAINT unique_user_deposit_account UNIQUE ("ID пользователя");
 
--- Table Баланс депозитарного счёта
 
 CREATE TABLE "Баланс депозитарного счёта"
 (
@@ -213,10 +202,46 @@ WITH (autovacuum_enabled=true);
 CREATE INDEX "IX_Relationship51" ON "Список ценных бумаг" ("ID валюты");
 ALTER TABLE "Список ценных бумаг" ADD CONSTRAINT "Unique_Identifier5" PRIMARY KEY ("ID ценной бумаги");
 
+CREATE OR REPLACE FUNCTION public.trg_validate_security_before_insert()
+RETURNS TRIGGER AS
+$BODY$
+BEGIN
+    -- Проверка: размер лота > 0
+    IF NEW."Размер лота" <= 0 THEN
+        RAISE EXCEPTION 'Размер лота должен быть строго больше нуля (получено: %)', NEW."Размер лота";
+    END IF;
+
+    -- Проверка: валюта существует
+    PERFORM 1 FROM public."Список валют" WHERE "ID валюты" = NEW."ID валюты";
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Валюта с ID % не найдена', NEW."ID валюты";
+    END IF;
+
+    -- Проверка уникальности ISIN
+    PERFORM 1 FROM public."Список ценных бумаг" WHERE "ISIN" = NEW."ISIN" AND "ID ценной бумаги" IS DISTINCT FROM NEW."ID ценной бумаги";
+    IF FOUND THEN
+        RAISE EXCEPTION 'Ценная бумага с ISIN % уже существует', NEW."ISIN";
+    END IF;
+
+    -- Проверка уникальности тикера (Наименование)
+    PERFORM 1 FROM public."Список ценных бумаг" WHERE "Наименование" = NEW."Наименование" AND "ID ценной бумаги" IS DISTINCT FROM NEW."ID ценной бумаги";
+    IF FOUND THEN
+        RAISE EXCEPTION 'Ценная бумага с тикером % уже существует', NEW."Наименование";
+    END IF;
+
+    RETURN NEW;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
+CREATE TRIGGER trg_validate_security_before_insert_or_update
+    BEFORE INSERT OR UPDATE ON public."Список ценных бумаг"
+    FOR EACH ROW
+    EXECUTE FUNCTION public.trg_validate_security_before_insert();
+
 -- Table История операций деп. счёта
 
-CREATE TABLE "История операций деп. счёта"
-(
+CREATE TABLE "История операций деп. счёта" (
   "ID операции деп. счёта" Serial NOT NULL,
   "Сумма операции" Numeric(12,2) NOT NULL,
   "Время" Timestamp(6) NOT NULL,
@@ -234,17 +259,12 @@ CREATE INDEX "IX_Relationship28" ON "История операций деп. с�
 CREATE INDEX "IX_Relationship35" ON "История операций деп. счёта" ("ID типа операции деп. счёта");
 ALTER TABLE "История операций деп. счёта" ADD CONSTRAINT "Unique_Identifier18" PRIMARY KEY ("ID операции деп. счёта","ID депозитарного счёта","ID пользователя","ID операции бр. счёта","ID брокерского счёта");
 
--- Table Тип операции депозитарного счёта
-
-CREATE TABLE "Тип операции депозитарного счёта"
-(
+CREATE TABLE "Тип операции депозитарного счёта" (
   "ID типа операции деп. счёта" Serial NOT NULL,
   "Тип" Character varying(15) NOT NULL
 )
 WITH (autovacuum_enabled=true);
 ALTER TABLE "Тип операции депозитарного счёта" ADD CONSTRAINT "Unique_Identifier1" PRIMARY KEY ("ID типа операции деп. счёта");
-
--- Table Брокерский счёт
 
 CREATE TABLE "Брокерский счёт"
 (
@@ -254,7 +274,8 @@ CREATE TABLE "Брокерский счёт"
   "БИК" Character varying(30) NOT NULL,
   "ID банка" Integer NOT NULL,
   "ID пользователя" Integer NOT NULL,
-  "ID валюты" Integer NOT NULL
+  "ID валюты" Integer NOT NULL,
+  "Статус архивации" Boolean NOT NULL
 )
 WITH (autovacuum_enabled=true);
 CREATE INDEX "IX_Relationship22" ON "Брокерский счёт" ("ID банка");
@@ -262,7 +283,6 @@ CREATE INDEX "IX_Relationship25" ON "Брокерский счёт" ("ID вал�
 CREATE INDEX "IX_Relationship52" ON "Брокерский счёт" ("ID пользователя");
 ALTER TABLE "Брокерский счёт" ADD CONSTRAINT "Unique_Identifier12" PRIMARY KEY ("ID брокерского счёта");
 
--- Сам триггер на таблицу "Брокерский счёт"
 CREATE TRIGGER trg_prevent_negative_balance
     BEFORE INSERT OR UPDATE OF "Баланс"
     ON public."Брокерский счёт"
@@ -270,7 +290,33 @@ CREATE TRIGGER trg_prevent_negative_balance
     EXECUTE FUNCTION prevent_negative_balance();
 
 
--- Table История операций бр. счёта
+CREATE OR REPLACE FUNCTION public.trg_validate_archive_brokerage_account()
+RETURNS TRIGGER AS
+$BODY$
+BEGIN
+    IF OLD."Статус архивации" = TRUE AND NEW."Статус архивации" = FALSE THEN
+        RAISE EXCEPTION 'Нельзя разархивировать брокерский счёт, который уже был архивирован (id: %)', OLD."ID брокерского счёта"
+        USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NEW."Статус архивации" = TRUE AND OLD."Статус архивации" = FALSE THEN
+        IF NEW."Баланс" > 0 THEN
+            RAISE EXCEPTION 'Нельзя архивировать брокерский счёт с положительным балансом (текущий баланс: %)', NEW."Баланс"
+                  USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
+CREATE TRIGGER _trg_validate_archive_brokerage_account
+    BEFORE UPDATE OF "Статус архивации"
+    ON public."Брокерский счёт"
+    FOR EACH ROW
+    EXECUTE FUNCTION public.trg_validate_archive_brokerage_account();
+
 
 CREATE TABLE "История операций бр. счёта"
 (
@@ -313,33 +359,81 @@ ALTER TABLE "Дивиденды" ADD CONSTRAINT "Unique_Identifier14" PRIMARY KE
 CREATE TABLE "Список валют"
 (
   "ID валюты" Serial NOT NULL,
-  "Код" Char(3) NOT NULL UNIQUE,
-  "Символ" Character varying(10) NOT NULL
+  "Код" Char(3) NOT NULL,
+  "Символ" Character varying(10) NOT NULL,
+  "Статус архивации" BOOLEAN NOT NULL
 )
 WITH (autovacuum_enabled=true);
 ALTER TABLE "Список валют" ADD CONSTRAINT "Unique_Identifier6" PRIMARY KEY ("ID валюты");
 
+INSERT INTO "Список валют"("Код", "Символ", "Статус архивации")
+VALUES
+('RUB', '₽', false);
+
 CREATE OR REPLACE FUNCTION validate_currency_fields()
 RETURNS TRIGGER AS $$
-DECLARE
-    symbol_length INTEGER;
 BEGIN
-    -- Проверяем, что код содержит ровно 3 символа
-    IF LENGTH(NEW."Код") != 3 THEN
-        RAISE EXCEPTION 'Поле "Код" должно содержать ровно 3 символа. Текущая длина: %', LENGTH(NEW."Код");
+    -- Запрещаем УДАЛЕНИЕ записи с ID = 1
+    IF TG_OP = 'DELETE' AND OLD."ID валюты" = 1 THEN
+        RAISE EXCEPTION 'Удаление базовой валюты с ID = 1 запрещено'
+              USING ERRCODE = 'check_violation';
     END IF;
 
-    -- Получаем длину строки в символах (не байтах) для Unicode
-    symbol_length := CHAR_LENGTH(NEW."Символ");
-
-    -- Проверяем, что символ содержит ровно 1 символ (включая Unicode)
-    IF symbol_length != 1 THEN
-        RAISE EXCEPTION 'Поле "Символ" должно содержать ровно 1 символ. Текущая длина: %', symbol_length;
+    -- Запрещаем любое изменение (UPDATE) записи с ID = 1
+    -- (это обычно базовая валюта, например RUB, которую нельзя менять)
+    IF TG_OP = 'UPDATE' AND OLD."ID валюты" = 1 THEN
+        RAISE EXCEPTION 'Изменение базовой валюты с ID = 1 запрещено'
+              USING ERRCODE = 'check_violation';
     END IF;
 
-    -- Дополнительная проверка: не разрешаем пробелы (опционально)
-    IF TRIM(NEW."Символ") = '' THEN
-        RAISE EXCEPTION 'Поле "Символ" не может быть пустым или состоять только из пробелов';
+    -- Запрещаем изменение ID валюты для любой записи
+    IF TG_OP = 'UPDATE' AND OLD."ID валюты" != NEW."ID валюты" THEN
+        RAISE EXCEPTION 'Изменение поля "ID валюты" запрещено'
+              USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Запрещаем создание записи с ID = 1 (если вдруг кто-то попробует)
+    IF TG_OP = 'INSERT' AND NEW."ID валюты" = 1 THEN
+        RAISE EXCEPTION 'Создание записи с ID валюты = 1 запрещено. Этот ID зарезервирован для системной валюты'
+              USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Приводим код к верхнему регистру
+    NEW."Код" := UPPER(TRIM(NEW."Код"));
+    IF char_length(NEW."Код") != 3 THEN
+        RAISE EXCEPTION 'Поле "Код" должно содержать ровно 3 символа. Текущая длина: %', char_length(NEW."Код");
+    END IF;
+
+    IF NEW."Код" !~ '^[A-Z]{3}$' THEN
+        RAISE EXCEPTION 'Поле "Код" должно состоять из 3 латинских букв в верхнем регистре (A-Z). Полученное значение: "%"', NEW."Код";
+    END IF;
+
+    IF NEW."Символ" ~ '\s' THEN
+        RAISE EXCEPTION 'Поле "Символ" не должно содержать пробелов, табуляций и других whitespace-символов';
+    END IF;
+
+    -- Проверка уникальности "Код" среди неархивированных валют
+    IF EXISTS (
+        SELECT 1
+        FROM "Список валют" c
+        WHERE c."Код" = NEW."Код"
+          AND c."Статус архивации" = false
+          AND c."ID валюты" IS DISTINCT FROM NEW."ID валюты"
+    ) THEN
+        RAISE EXCEPTION 'Код валюты "%" уже существует среди активных (неархивированных) валют', NEW."Код"
+              USING ERRCODE = 'unique_violation';
+    END IF;
+
+    -- Проверка уникальности "Символ" среди неархивированных валют
+    IF EXISTS (
+        SELECT 1
+        FROM "Список валют" c
+        WHERE c."Символ" = NEW."Символ"
+          AND c."Статус архивации" = false
+          AND c."ID валюты" IS DISTINCT FROM NEW."ID валюты"
+    ) THEN
+        RAISE EXCEPTION 'Символ валюты "%" уже существует среди активных (неархивированных) валют', NEW."Символ"
+              USING ERRCODE = 'unique_violation';
     END IF;
 
     RETURN NEW;
@@ -347,7 +441,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER check_currency_fields_before_insert_or_update
-    BEFORE INSERT OR UPDATE ON "Список валют"
+    BEFORE INSERT OR UPDATE OR DELETE ON "Список валют"
     FOR EACH ROW
     EXECUTE FUNCTION validate_currency_fields();
 
@@ -387,20 +481,6 @@ CREATE INDEX "IX_Relationship20" ON "Предложение" ("ID ценной �
 CREATE INDEX "IX_Relationship36" ON "Предложение" ("ID типа предложения");
 ALTER TABLE "Предложение" ADD CONSTRAINT "Unique_Identifier11" PRIMARY KEY ("ID предложения","ID брокерского счёта");
 
-ALTER TABLE "Предложение"
-ADD CONSTRAINT "FK_Status_Offer"
-FOREIGN KEY ("ID статуса предложения")
-REFERENCES "Статус предложения"("ID статуса")
-ON UPDATE RESTRICT
-ON DELETE RESTRICT;
-
-ALTER TABLE "Предложение"
-ADD CONSTRAINT "FK_BrOpHistory"
-FOREIGN KEY ("ID операции бр. счёта")
-REFERENCES "История операций бр. счёта"("ID операции бр. счёта")
-ON UPDATE RESTRICT
-ON DELETE RESTRICT;
-
 -- Table Банк
 
 CREATE TABLE "Банк"
@@ -410,10 +490,70 @@ CREATE TABLE "Банк"
   "ИНН" Character varying(40) NOT NULL,
   "ОГРН" Character varying(40) NOT NULL,
   "БИК" Character varying(40) NOT NULL,
-  "Срок действия лицензии" Date NOT NULL
+  "Срок действия лицензии" Date NOT NULL,
+  "Статус архивации" Boolean NOT NULL
 )
 WITH (autovacuum_enabled=true);
 ALTER TABLE "Банк" ADD CONSTRAINT "Unique_Identifier8" PRIMARY KEY ("ID банка");
+
+CREATE OR REPLACE FUNCTION public.trg_validate_bank_before_insert_or_update()
+RETURNS TRIGGER AS
+$BODY$
+BEGIN
+    -- Убираем лишние пробелы
+    NEW."Наименование" := TRIM(NEW."Наименование");
+    NEW."ИНН" := TRIM(NEW."ИНН");
+    NEW."ОГРН" := TRIM(NEW."ОГРН");
+    NEW."БИК" := TRIM(NEW."БИК");
+
+    IF NEW."Наименование" = '' OR NEW."ИНН" = '' OR NEW."ОГРН" = '' OR NEW."БИК" = '' THEN
+        RAISE EXCEPTION 'Все поля банка обязательны для заполнения';
+    END IF;
+
+    IF NEW."БИК" !~ '^\d{9}$' THEN
+        RAISE EXCEPTION 'БИК должен состоять ровно из 9 цифр (получено: %)', NEW."БИК";
+    END IF;
+
+    IF NEW."ИНН" !~ '^\d{10}$|^\d{12}$' THEN
+        RAISE EXCEPTION 'ИНН должен состоять из 10 или 12 цифр (получено: %)', NEW."ИНН";
+    END IF;
+
+    IF NEW."ОГРН" !~ '^\d{13}$|^\d{15}$' THEN
+        RAISE EXCEPTION 'ОГРН должен состоять из 13 или 15 цифр (получено: %)', NEW."ОГРН";
+    END IF;
+
+    IF NEW."Срок действия лицензии" < CURRENT_DATE THEN
+        RAISE EXCEPTION 'Срок действия лицензии не может быть в прошлом (указана дата: %)', NEW."Срок действия лицензии";
+    END IF;
+
+    -- Уникальность БИК (если ещё нет уникального индекса)
+    PERFORM 1
+    FROM public."Банк"
+    WHERE "БИК" = NEW."БИК"
+      AND "ID банка" IS DISTINCT FROM NEW."ID банка";
+    IF FOUND THEN
+        RAISE EXCEPTION 'Банк с БИК % уже существует', NEW."БИК";
+    END IF;
+
+    -- Уникальность ИНН (опционально, если нужно)
+    PERFORM 1
+    FROM public."Банк"
+    WHERE "ИНН" = NEW."ИНН"
+      AND "ID банка" IS DISTINCT FROM NEW."ID банка";
+    IF FOUND THEN
+        RAISE EXCEPTION 'Банк с ИНН % уже существует', NEW."ИНН";
+    END IF;
+
+    RETURN NEW;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
+-- Привязываем триггер
+CREATE TRIGGER trg_bank_validation
+    BEFORE INSERT OR UPDATE ON public."Банк"
+    FOR EACH ROW
+    EXECUTE FUNCTION public.trg_validate_bank_before_insert_or_update();
 
 -- Table История цены
 
@@ -422,11 +562,29 @@ CREATE TABLE "История цены"
   "ID зап. ист. цены" Serial NOT NULL,
   "Дата" Date NOT NULL,
   "Цена" Numeric(12,2) NOT NULL,
-  "ID ценной бумаги" Integer NOT NULL
+  "ID ценной бумаги" Integer NOT NULL,
+  UNIQUE ("Дата", "Цена")
 )
 WITH (autovacuum_enabled=true);
 CREATE INDEX "IX_Relationship50" ON "История цены" ("ID ценной бумаги");
 ALTER TABLE "История цены" ADD CONSTRAINT "Unique_Identifier15" PRIMARY KEY ("ID зап. ист. цены");
+
+
+CREATE OR REPLACE FUNCTION check_history_price_non_negative()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Проверяем, что цена не меньше нуля
+    IF NEW."Цена" < 0 THEN
+        RAISE EXCEPTION 'Цена не может быть меньше нуля. Полученное значение: %', NEW."Цена";
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER validate_price_before_insert
+    BEFORE INSERT OR UPDATE ON public."История цены"
+    FOR EACH ROW
+    EXECUTE FUNCTION check_history_price_non_negative();
 
 CREATE TABLE currency_rate (
     id SERIAL PRIMARY KEY,
@@ -466,7 +624,33 @@ CREATE TABLE "Статус блока пользователя" (
 )
 WITH (autovacuum_enabled=true);
 
+CREATE TABLE "Уровень прав админа" (
+    "ID уровня прав" Serial PRIMARY KEY,
+    "Уровень прав" VARCHAR(30) NOT NULL UNIQUE
+)
+WITH (autovacuum_enabled=true);
 -- Create foreign keys (relationships) section -------------------------------------------------
+
+ALTER TABLE "Персонал"
+ADD CONSTRAINT "Relationship56"
+FOREIGN KEY ("ID уровня прав")
+REFERENCES "Уровень прав админа" ("ID уровня прав")
+ON DELETE RESTRICT
+ON UPDATE RESTRICT;
+
+ALTER TABLE "Предложение"
+ADD CONSTRAINT "FK_Status_Offer"
+FOREIGN KEY ("ID статуса предложения")
+REFERENCES "Статус предложения"("ID статуса")
+ON UPDATE RESTRICT
+ON DELETE RESTRICT;
+
+ALTER TABLE "Предложение"
+ADD CONSTRAINT "FK_BrOpHistory"
+FOREIGN KEY ("ID операции бр. счёта")
+REFERENCES "История операций бр. счёта"("ID операции бр. счёта")
+ON UPDATE RESTRICT
+ON DELETE RESTRICT;
 
 ALTER TABLE "Пользователь"
 ADD CONSTRAINT "Relationship55"
@@ -475,102 +659,89 @@ REFERENCES "Статус блока пользователя"("ID статуса
 ON DELETE RESTRICT
 ON UPDATE RESTRICT;
 
-
 ALTER TABLE "Пользователь"
   ADD CONSTRAINT "Relationship4"
     FOREIGN KEY ("ID статуса верификации")
     REFERENCES "Статус верификации" ("ID статуса верификации")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "Депозитарный счёт"
   ADD CONSTRAINT "Relationship13"
     FOREIGN KEY ("ID пользователя")
     REFERENCES "Пользователь" ("ID пользователя")
       ON DELETE CASCADE
-      ON UPDATE CASCADE
-;
+      ON UPDATE CASCADE;
 
 ALTER TABLE "Баланс депозитарного счёта"
   ADD CONSTRAINT "Relationship14"
     FOREIGN KEY ("ID депозитарного счёта", "ID пользователя")
     REFERENCES "Депозитарный счёт" ("ID депозитарного счёта", "ID пользователя")
       ON DELETE CASCADE
-      ON UPDATE CASCADE
-;
+      ON UPDATE CASCADE;
 
 ALTER TABLE "История операций деп. счёта"
   ADD CONSTRAINT "Relationship15"
     FOREIGN KEY ("ID депозитарного счёта", "ID пользователя")
     REFERENCES "Депозитарный счёт" ("ID депозитарного счёта", "ID пользователя")
       ON DELETE CASCADE
-      ON UPDATE CASCADE
-;
+      ON UPDATE CASCADE;
 
 ALTER TABLE "Баланс депозитарного счёта"
   ADD CONSTRAINT "Relationship17"
     FOREIGN KEY ("ID ценной бумаги")
     REFERENCES "Список ценных бумаг" ("ID ценной бумаги")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "Предложение"
   ADD CONSTRAINT "Relationship20"
     FOREIGN KEY ("ID ценной бумаги")
     REFERENCES "Список ценных бумаг" ("ID ценной бумаги")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "Брокерский счёт"
   ADD CONSTRAINT "Relationship22"
     FOREIGN KEY ("ID банка")
     REFERENCES "Банк" ("ID банка")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "История операций бр. счёта"
   ADD CONSTRAINT "Relationship23"
     FOREIGN KEY ("ID брокерского счёта")
     REFERENCES "Брокерский счёт" ("ID брокерского счёта")
       ON DELETE CASCADE
-      ON UPDATE CASCADE
-;
+      ON UPDATE CASCADE;
 
 ALTER TABLE "Брокерский счёт"
   ADD CONSTRAINT "Relationship25"
     FOREIGN KEY ("ID валюты")
     REFERENCES "Список валют" ("ID валюты")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "История операций деп. счёта"
   ADD CONSTRAINT "Relationship27"
     FOREIGN KEY ("ID ценной бумаги")
     REFERENCES "Список ценных бумаг" ("ID ценной бумаги")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "История операций деп. счёта"
   ADD CONSTRAINT "Relationship28"
     FOREIGN KEY ("ID сотрудника")
     REFERENCES "Персонал" ("ID сотрудника")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "История операций бр. счёта"
   ADD CONSTRAINT "Relationship29"
     FOREIGN KEY ("ID сотрудника")
     REFERENCES "Персонал" ("ID сотрудника")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "Предложение"
   ADD CONSTRAINT "Relationship30"
@@ -584,72 +755,63 @@ ALTER TABLE "История операций деп. счёта"
     FOREIGN KEY ("ID операции бр. счёта", "ID брокерского счёта")
     REFERENCES "История операций бр. счёта" ("ID операции бр. счёта", "ID брокерского счёта")
       ON DELETE CASCADE
-      ON UPDATE CASCADE
-;
+      ON UPDATE CASCADE;
 
 ALTER TABLE "История операций бр. счёта"
   ADD CONSTRAINT "Relationship33"
     FOREIGN KEY ("ID типа операции бр. счёта")
     REFERENCES "Тип операции брокерского счёта" ("ID типа операции бр. счёта")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "Персонал"
   ADD CONSTRAINT "Relationship34"
     FOREIGN KEY ("ID статуса трудоустройства")
     REFERENCES "Статус трудоустройства" ("ID статуса трудоустройства")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "История операций деп. счёта"
   ADD CONSTRAINT "Relationship35"
     FOREIGN KEY ("ID типа операции деп. счёта")
     REFERENCES "Тип операции депозитарного счёта" ("ID типа операции деп. счёта")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "Предложение"
   ADD CONSTRAINT "Relationship36"
     FOREIGN KEY ("ID типа предложения")
     REFERENCES "Тип предложения" ("ID типа предложения")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "Дивиденды"
   ADD CONSTRAINT "Relationship48"
     FOREIGN KEY ("ID ценной бумаги")
     REFERENCES "Список ценных бумаг" ("ID ценной бумаги")
       ON DELETE CASCADE
-      ON UPDATE CASCADE
-;
+      ON UPDATE CASCADE;
 
 ALTER TABLE "Паспорт"
   ADD CONSTRAINT "Relationship49"
     FOREIGN KEY ("ID пользователя")
     REFERENCES "Пользователь" ("ID пользователя")
       ON DELETE CASCADE
-      ON UPDATE CASCADE
-;
+      ON UPDATE CASCADE;
 
 ALTER TABLE "История цены"
   ADD CONSTRAINT "Relationship50"
     FOREIGN KEY ("ID ценной бумаги")
     REFERENCES "Список ценных бумаг" ("ID ценной бумаги")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "Список ценных бумаг"
   ADD CONSTRAINT "Relationship51"
     FOREIGN KEY ("ID валюты")
     REFERENCES "Список валют" ("ID валюты")
       ON DELETE RESTRICT
-      ON UPDATE RESTRICT
-;
+      ON UPDATE RESTRICT;
 
 ALTER TABLE "Брокерский счёт"
 	ADD CONSTRAINT "Relationship52"
@@ -666,40 +828,7 @@ ADD CONSTRAINT "Relationship53"
     ON DELETE RESTRICT
     ON UPDATE RESTRICT;
 
-
-INSERT INTO "Статус верификации"("Статус верификации")
-VALUES
-('Не подтверждён'),
-('Подтверждён'),
-('Ожидает верификации');
-
-INSERT INTO "Статус трудоустройства"("Статус трудоустройства")
-VALUES
-('Активен'),
-('Уволен'),
-('Отпуск');
-
-INSERT INTO "Статус предложения"("Статус")
-VALUES
-('Не подтверждён'),
-('Подтверждён'),
-('Ожидает верификации');
-
-INSERT INTO public."Персонал" (
-    "Номер трудового договора",
-    "Логин",
-    "Пароль",
-    "Уровень прав",
-    "ID статуса трудоустройства"
-) VALUES
-(1,'megaadmin','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO','1',1), --Мега админ
-(2,'system','','5',1);  --Система
-
-
-INSERT INTO "Список валют"("Код", "Символ")
-VALUES
-('RUB', '₽');
-
+-- Справочники, которые не будут изменяться
 INSERT INTO "Тип операции депозитарного счёта"("Тип")
 VALUES
 ('Покупка'),
@@ -716,7 +845,6 @@ VALUES
 ('Продажа ЦБ'),
 ('Empty');
 
--- 9. Типы предложений
 INSERT INTO "Тип предложения"("Тип")
 VALUES
 ('Покупка'),
@@ -727,10 +855,303 @@ VALUES
 ('Не заблокирован'),
 ('Заблокирован');
 
+INSERT INTO "Уровень прав админа" ("Уровень прав")
+VALUES
+('Megaadmin'),
+('Admin'),
+('Broker'),
+('Verifier');
 
--- =========================
--- 2) ФУНКЦИИ
--- =========================
+INSERT INTO "Статус верификации"("Статус верификации")
+VALUES
+('Не подтверждён'),
+('Подтверждён'),
+('Ожидает верификации');
+
+INSERT INTO "Статус предложения"("Статус")
+VALUES
+('Не подтверждён'),
+('Подтверждён'),
+('Ожидает верификации');
+
+-- Справочники, которые могут изменяться
+INSERT INTO "Статус трудоустройства"("Статус трудоустройства")
+VALUES
+('Активен'),
+('Уволен'),
+('Отпуск');
+
+
+INSERT INTO public."Персонал" (
+    "Номер трудового договора",
+    "Логин",
+    "Пароль",
+    "ID статуса трудоустройства",
+    "ID уровня прав"
+) VALUES
+(1,'megaadmin','$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 1, 1),
+(2,'system','', 1, 1);
+
+
+-- todo: add inn as parameter
+CREATE OR REPLACE FUNCTION public.add_brokerage_account(
+    p_user_id       INTEGER,
+    p_bank_id       INTEGER,
+    p_currency_id   INTEGER
+)
+RETURNS INTEGER AS
+$BODY$
+DECLARE
+    v_account_id INTEGER;
+    v_bik        VARCHAR(40);
+BEGIN
+    -- Проверка существования банка
+    SELECT "БИК"
+    INTO v_bik
+    FROM public."Банк"
+    WHERE "ID банка" = p_bank_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Банк с ID % не найден', p_bank_id
+              USING ERRCODE = 'foreign_key_violation';
+    END IF;
+
+    -- Проверка существования валюты (и что она не архивирована)
+    PERFORM 1
+    FROM public."Список валют"
+    WHERE "ID валюты" = p_currency_id
+      AND "Статус архивации" = FALSE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Валюта с ID % не найдена или архивирована', p_currency_id
+              USING ERRCODE = 'foreign_key_violation';
+    END IF;
+
+    -- Создаём брокерский счёт с нулевым балансом
+    INSERT INTO public."Брокерский счёт" (
+        "Баланс",
+        "ID банка",
+        "БИК",
+        "ИНН",
+        "ID валюты",
+        "ID пользователя",
+        "Статус архивации"
+    )
+    VALUES (
+        0.00,
+        p_bank_id,
+        v_bik,
+        ' ',
+        p_currency_id,
+        p_user_id,
+        false
+    )
+    RETURNING "ID брокерского счёта" INTO v_account_id;
+
+    RETURN v_account_id;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
+
+CREATE OR REPLACE FUNCTION public.delete_brokerage_account(
+    p_account_id INTEGER,
+    p_user_id    INTEGER
+)
+RETURNS VOID AS
+$BODY$
+BEGIN
+    -- Проверяем существование и принадлежность счёта
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public."Брокерский счёт"
+        WHERE "ID брокерского счёта" = p_account_id
+          AND "ID пользователя" = p_user_id
+    ) THEN
+        RAISE EXCEPTION 'Брокерский счёт с ID % не найден или не принадлежит вам', p_account_id;
+    END IF;
+
+    -- Проверяем баланс
+    IF (SELECT "Баланс" FROM public."Брокерский счёт" WHERE "ID брокерского счёта" = p_account_id) != 0 THEN
+        RAISE EXCEPTION 'Нельзя удалить брокерский счёт с ненулевым балансом';
+    END IF;
+
+    -- Удаляем счёт (каскадное удаление через FK ON DELETE CASCADE, если настроено)
+    DELETE FROM public."Брокерский счёт"
+    WHERE "ID брокерского счёта" = p_account_id;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
+
+CREATE OR REPLACE FUNCTION public.add_bank(
+    p_name               VARCHAR(120),
+    p_inn                VARCHAR(40),
+    p_ogrn               VARCHAR(40),
+    p_bik                VARCHAR(40),
+    p_license_expiry_date DATE
+)
+RETURNS INTEGER AS
+$BODY$
+DECLARE
+    v_bank_id INTEGER;
+BEGIN
+    -- Все валидации теперь в триггере — здесь только вставка
+    INSERT INTO public."Банк" (
+        "Наименование",
+        "ИНН",
+        "ОГРН",
+        "БИК",
+        "Срок действия лицензии",
+        "Статус архивации"
+    )
+    VALUES (
+        p_name,
+        p_inn,
+        p_ogrn,
+        p_bik,
+        p_license_expiry_date,
+        false
+    )
+    RETURNING "ID банка" INTO v_bank_id;
+
+    RETURN v_bank_id;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
+
+CREATE OR REPLACE FUNCTION public.submit_passport(
+    p_user_id INTEGER,
+    p_last_name VARCHAR,
+    p_first_name VARCHAR,
+    p_patronymic VARCHAR,
+    p_series VARCHAR,
+    p_number VARCHAR,
+    p_gender VARCHAR,
+    p_birth_date DATE,
+    p_birth_place VARCHAR,
+    p_registration_place VARCHAR,
+    p_issue_date DATE,
+    p_issued_by VARCHAR
+)
+RETURNS INTEGER AS
+$BODY$
+DECLARE
+    v_passport_id INTEGER;
+BEGIN
+    IF EXISTS (SELECT 1 FROM "Паспорт" WHERE "ID пользователя" = p_user_id) THEN
+        RAISE EXCEPTION 'Паспорт уже привязан к пользователю'
+              USING ERRCODE = 'unique_violation';
+    END IF;
+
+    -- Вставляем паспорт
+    INSERT INTO "Паспорт" (
+    "ID пользователя", "Фамилия", "Имя", "Отчество", "Серия", "Номер",
+    "Пол", "Дата рождения", "Место рождения", "Место прописки",
+    "Дата выдачи", "Кем выдан", "Актуальность"
+) VALUES (
+    p_user_id, p_last_name, p_first_name, p_patronymic, p_series, p_number,
+    p_gender, p_birth_date, p_birth_place, p_registration_place,
+    p_issue_date, p_issued_by, TRUE
+)
+RETURNING "ID паспорта" INTO v_passport_id;
+
+    -- Обновляем статус верификации пользователя
+    UPDATE "Пользователь"
+    SET "ID статуса верификации" = 3  -- "Ожидает верификации"
+    WHERE "ID пользователя" = p_user_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Пользователь с ID % не найден', p_user_id;
+    END IF;
+
+    RETURN v_passport_id;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
+
+CREATE OR REPLACE FUNCTION public.add_currency(
+    p_code      VARCHAR,          -- код валюты, например 'USD'
+    p_symbol    VARCHAR,          -- символ валюты, например '$' или '₽'
+    p_rate_to_ruble NUMERIC(20,8) -- курс к рублю на сегодня
+)
+RETURNS INTEGER AS
+$BODY$
+DECLARE
+    v_currency_id INTEGER;
+BEGIN
+    -- Шаг 1: Добавляем валюту в таблицу "Список валют"
+    -- Триггер validate_currency_fields() автоматически проверит все правила
+    -- (длина кода, только A-Z, отсутствие пробелов в символе, уникальность среди активных)
+    INSERT INTO public."Список валют" ("Код", "Символ", "Статус архивации")
+    VALUES (
+        UPPER(TRIM(p_code)),          -- код приводим к верхнему регистру и убираем пробелы
+        TRIM(p_symbol),               -- убираем возможные пробелы по краям символа
+        FALSE                         -- новая валюта всегда активна
+    )
+    RETURNING "ID валюты" INTO v_currency_id;
+
+    -- Шаг 2: Добавляем курс на текущую дату
+    INSERT INTO public.currency_rate (currency_id, rate, rate_date)
+    VALUES (v_currency_id, p_rate_to_ruble, CURRENT_DATE);
+
+    -- Если в таблице currency_rate есть триггер check_currency_rate_positive(),
+    -- он автоматически проверит, что курс положительный
+
+    -- Возвращаем ID добавленной валюты (удобно для дальнейшего использования)
+    RETURN v_currency_id;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
+
+CREATE OR REPLACE FUNCTION public.change_currency_info(
+    p_currency_id       INTEGER,
+    p_new_code          VARCHAR,
+    p_new_symbol        VARCHAR,
+    p_new_rate_to_ruble NUMERIC(20,8)
+)
+RETURNS VOID AS
+$BODY$
+DECLARE
+    v_archived BOOLEAN;
+BEGIN
+    -- Проверяем, существует ли валюта с таким ID
+    SELECT "Статус архивации"
+    INTO v_archived
+    FROM public."Список валют"
+    WHERE "ID валюты" = p_currency_id;
+
+    -- Если запись не найдена — выбрасываем ошибку
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Валюта с ID % не существует', p_currency_id
+              USING ERRCODE = 'no_data_found';
+    END IF;
+
+    -- Если валюта уже в архиве — запрещаем изменение
+    IF v_archived THEN
+        RAISE EXCEPTION 'Валюта с ID % находится в архиве и не может быть изменена', p_currency_id
+              USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Обновляем код и символ валюты
+    -- Все проверки (формат кода, уникальность среди активных и т.д.) выполнит существующий триггер
+    UPDATE public."Список валют"
+    SET "Код"    = UPPER(TRIM(p_new_code)),
+        "Символ" = TRIM(p_new_symbol)
+    WHERE "ID валюты" = p_currency_id;
+
+    INSERT INTO public.currency_rate (currency_id, rate, rate_date)
+    VALUES (p_currency_id, p_new_rate_to_ruble, CURRENT_DATE)
+    ON CONFLICT (currency_id, rate_date)
+    DO UPDATE SET rate = EXCLUDED.rate;
+
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
 
 CREATE OR REPLACE FUNCTION public.change_brokerage_account_balance(
     p_account_id integer,
@@ -801,8 +1222,6 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.change_brokerage_account_balance(integer, numeric, integer, integer)
-    OWNER TO postgres;
 
 CREATE OR REPLACE FUNCTION check_user_verification_status(user_id integer)
 RETURNS boolean AS $$
@@ -881,9 +1300,6 @@ AS $BODY$
 	ORDER BY id DESC;
 $BODY$;
 
-ALTER FUNCTION public.get_user_offers(integer)
-    OWNER TO postgres;
-
 
 CREATE OR REPLACE FUNCTION public.get_exchange_stocks() -- список всех ценных бумаг с доп. информацией (вкладка "биржа")
 RETURNS TABLE (
@@ -939,9 +1355,6 @@ SELECT
 FROM prices
 ORDER BY ticker;
 $$;
-
-ALTER FUNCTION public.get_exchange_stocks()
-    OWNER TO postgres;
 
 
 CREATE OR REPLACE FUNCTION public.get_brokerage_account_operations(
@@ -1032,11 +1445,53 @@ BEGIN
                          p_currency2, found_date;
         END IF;
     END IF;
-
-    -- currency1 / currency2 = rate2 / rate1
-    RETURN rate2 / rate1;
+    RETURN rate1 / rate2;
 END;
 $$;
+
+CREATE OR REPLACE FUNCTION public.change_currency_info(
+    p_currency_id       INTEGER,
+    p_new_code          VARCHAR,
+    p_new_symbol        VARCHAR,
+    p_new_rate_to_ruble NUMERIC(20,8)
+)
+RETURNS VOID AS
+$BODY$
+DECLARE
+    v_archived BOOLEAN;
+BEGIN
+    -- Проверяем, существует ли валюта с таким ID
+    SELECT "Статус архивации"
+    INTO v_archived
+    FROM public."Список валют"
+    WHERE "ID валюты" = p_currency_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Валюта с ID % не существует', p_currency_id
+              USING ERRCODE = 'no_data_found';
+    END IF;
+    IF v_archived THEN
+        RAISE EXCEPTION 'Валюта с ID % находится в архиве и не может быть изменена', p_currency_id
+              USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Обновляем код и символ валюты
+    -- Все проверки (формат кода, уникальность среди активных и т.д.) выполнит существующий триггер
+    UPDATE public."Список валют"
+    SET "Код"    = UPPER(TRIM(p_new_code)),
+        "Символ" = TRIM(p_new_symbol)
+    WHERE "ID валюты" = p_currency_id;
+
+    -- Обновляем (или добавляем) курс на текущую дату
+    INSERT INTO public.currency_rate (currency_id, rate, rate_date)
+    VALUES (p_currency_id, p_new_rate_to_ruble, CURRENT_DATE)
+    ON CONFLICT (currency_id, rate_date)
+    DO UPDATE SET rate = EXCLUDED.rate;
+
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
 
 -- Курс p_target_currency_id/RUB
 CREATE OR REPLACE FUNCTION get_currency_rate(p_target_currency_id INT)
@@ -1045,7 +1500,7 @@ RETURNS NUMERIC AS $$
 $$ LANGUAGE sql STABLE;
 
 
-CREATE OR REPLACE FUNCTION calc_depo_value(
+CREATE OR REPLACE FUNCTION get_depo_value(
     p_depo_id INT,
     p_user_id INT,
     p_currency_id INT
@@ -1081,60 +1536,91 @@ BEGIN
         IF paper_price IS NULL OR paper_price = 0 THEN
             CONTINUE;
         END IF;
-
-        -- Вычисляем стоимость бумаги в её собственной валюте
         paper_value := paper_value * paper_price;
-
-        -- Если валюта бумаги совпадает с целевой валютой
-        IF paper_currency_id = p_currency_id THEN
-            total_value := total_value + paper_value;
-        ELSE
-            -- Конвертируем в целевую валюту
-            -- Предполагаем, что функция get_currency_rate(from_currency_id, to_currency_id) существует
-            exchange_rate := get_currency_rate(paper_currency_id, p_currency_id);
-
-            IF exchange_rate IS NOT NULL AND exchange_rate > 0 THEN
-                total_value := total_value + (paper_value / exchange_rate);
-            END IF;
-        END IF;
+        exchange_rate := get_currency_rate(paper_currency_id, p_currency_id);
+        total_value := total_value + (paper_value / exchange_rate);
     END LOOP;
 
     RETURN COALESCE(total_value, 0);
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION public.get_brokerage_account_value(
+    p_brokerage_account_id INTEGER,
+    p_target_currency_id   INTEGER,
+    p_date                 DATE DEFAULT CURRENT_DATE
+)
+RETURNS NUMERIC(20,8) AS
+$BODY$
+DECLARE
+    v_balance          NUMERIC(12,2);
+    v_account_currency_id INTEGER;
+    v_converted_amount NUMERIC(20,8);
+BEGIN
+    -- Получаем баланс и валюту счёта
+    SELECT "Баланс", "ID валюты"
+    INTO v_balance, v_account_currency_id
+    FROM public."Брокерский счёт"
+    WHERE "ID брокерского счёта" = p_brokerage_account_id;
 
--- 2.4 calc_total_account_value: суммарное значение всех депозитарных + брокерских счетов в валюте p_currency_id
-CREATE OR REPLACE FUNCTION calc_total_account_value(
-    p_user_id INT,
-    p_currency_id INT      -- Валюта результата
-) RETURNS NUMERIC AS $$
+    -- Если счёт не найден — бросаем ошибку
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Брокерский счёт с ID % не существует', p_brokerage_account_id
+              USING ERRCODE = 'no_data_found';
+    END IF;
+
+    -- Если валюта счёта уже целевая — возвращаем баланс без конвертации
+    IF v_account_currency_id = p_target_currency_id THEN
+        RETURN v_balance;
+    END IF;
+
+    v_converted_amount := v_balance * public.get_currency_rate(
+        p_currency1 => v_account_currency_id,   -- из валюты счёта
+        p_currency2 => p_target_currency_id,   -- в целевую валюту
+        p_date      => p_date
+    );
+
+    RETURN ROUND(v_converted_amount, 8);  -- округляем до 8 знаков после запятой
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE;
+
+
+CREATE OR REPLACE FUNCTION public.get_total_account_value(
+    p_user_id integer,
+    p_currency_id integer)
+    RETURNS numeric
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
 DECLARE
     total NUMERIC := 0;
     depo RECORD;
     bs_sum NUMERIC := 0;
 BEGIN
-    -- Сумма по всем депозитарным счетам
+    -- Сумма по всем депозитарным счетам (предполагаем, что calc_depo_value уже использует get_currency_rate или будет обновлена аналогично)
     FOR depo IN
         SELECT "ID депозитарного счёта" AS id
         FROM "Депозитарный счёт"
         WHERE "ID пользователя" = p_user_id
     LOOP
-        total := total + calc_depo_value(depo.id, p_user_id, p_currency_id);
+        total := total + get_depo_value(depo.id, p_user_id, p_currency_id);
     END LOOP;
 
-    -- Добавляем брокерские счета: суммируем балансы и конвертируем в p_currency_id
-    SELECT COALESCE(SUM(convert_amount(bs."Баланс", p_currency_id, bs."ID валюты")),0)
+    -- Сумма по брокерским счетам с конвертацией через get_currency_rate
+    SELECT COALESCE(SUM(
+        bs."Баланс" * public.get_currency_rate(bs."ID валюты", p_currency_id, CURRENT_DATE)
+    ), 0)
     INTO bs_sum
     FROM "Брокерский счёт" bs
     WHERE bs."ID пользователя" = p_user_id;
 
-    total := total + COALESCE(bs_sum,0);
+    total := total + COALESCE(bs_sum, 0);
 
-    RETURN COALESCE(total,0);
+    RETURN COALESCE(total, 0);
 END;
-$$ LANGUAGE plpgsql;
-
+$BODY$;
 
 CREATE OR REPLACE FUNCTION calc_offer_value(
     p_offer_id INT
@@ -1407,9 +1893,6 @@ BEGIN
 END;
 $$;
 
-ALTER FUNCTION public.get_security_value(integer, integer)
-OWNER TO postgres;
-
 CREATE OR REPLACE FUNCTION public.get_security_value_native( -- цена 1 ед. ценной бумаги в собственной валюте
     p_security_id integer
 )
@@ -1437,9 +1920,6 @@ BEGIN
 END;
 $$;
 
-ALTER FUNCTION public.get_security_value_native(integer)
-OWNER TO postgres;
-
 CREATE OR REPLACE FUNCTION add_buy_proposal(
     p_security_id INTEGER,
     p_brokerage_account_id INTEGER,
@@ -1457,7 +1937,7 @@ DECLARE
 
     v_buy_type_id INTEGER := 1;                 -- Покупка
     v_active_status_id INTEGER := 3;            -- Новое/активное предложение
-    v_employee_id INTEGER := 5;                 -- По умолчанию сотрудник 5
+    v_employee_id INTEGER := 2;                 -- По умолчанию сотрудник 5
 BEGIN
     -- Проверка: количество лотов должно быть строго больше нуля
     IF p_lot_amount_to_buy <= 0 THEN
@@ -1539,7 +2019,7 @@ DECLARE
 
     v_sell_type_id INTEGER := 2;      -- Тип предложения: продажа
     v_active_status_id INTEGER := 3;  -- Статус нового предложения
-    v_employee_id INTEGER := 5;       -- Сотрудник по умолчанию
+    v_employee_id INTEGER := 2;       -- Сотрудник по умолчанию
 	v_empty_brokerage_type INTEGER := 6; -- Неотображающаяся операция
     v_lock_deposit_operation_type_id INTEGER := 3; -- Тип операции деп. счёта: заморозка
 BEGIN
@@ -1608,7 +2088,6 @@ BEGIN
       AND "ID пользователя" = v_user_id
       AND "ID ценной бумаги" = p_security_id;
 
-    -- 8. Создаём запись в истории операций брокерского счёта с суммой 0
     INSERT INTO public."История операций бр. счёта" (
         "Сумма операции",
         "Время",
@@ -1624,7 +2103,6 @@ BEGIN
     )
     RETURNING "ID операции бр. счёта" INTO v_brokerage_operation_id;
 
-    -- 9. Создаём запись в истории операций депозитарного счёта (заморозка)
     INSERT INTO public."История операций деп. счёта" (
         "Сумма операции",
         "Время",
@@ -1647,10 +2125,8 @@ BEGIN
         v_lock_deposit_operation_type_id
     )
     RETURNING "ID операции деп. счёта" INTO v_deposit_operation_id;
-
-    -- 10. Создаём предложение на продажу (используем RETURNING вместо nextval)
     INSERT INTO public."Предложение" (
-        "Сумма",                        -- количество ценных бумаг
+        "Сумма",
         "Сумма в валюте",
 		"ID операции бр. счёта",
 		"ID ценной бумаги",
@@ -1672,9 +2148,9 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION public.process_buy_proposal(
-    p_employee_id integer,    -- ID сотрудника-админа, который принимает решение
-    p_proposal_id integer,    -- ID предложения
-    p_verify boolean          -- TRUE = одобрить, FALSE = отклонить
+    p_employee_id integer,
+    p_proposal_id integer,
+    p_verify boolean
 )
 RETURNS void
 LANGUAGE 'plpgsql'
@@ -1684,25 +2160,23 @@ AS $BODY$
 DECLARE
     v_brokerage_account_id INTEGER;
     v_security_id INTEGER;
-    v_quantity NUMERIC(12,2);          -- количество ценных бумаг
-    v_cost NUMERIC(12,2);              -- сумма в валюте
+    v_quantity NUMERIC(12,2);
+    v_cost NUMERIC(12,2);
 
     v_deposit_account_id INTEGER;
     v_user_id INTEGER;
 
-    v_broker_operation_id INTEGER;     -- ID исходной операции списания (для ссылки)
-    v_new_broker_operation_id INTEGER; -- ID новой операции при отклонении (не обязателен)
+    v_broker_operation_id INTEGER;
+    v_new_broker_operation_id INTEGER;
     v_new_deposit_operation_id INTEGER;
 
-    -- Константы (подправьте только если отличаются в вашей базе)
-    c_buy_type_id CONSTANT INTEGER := 1;                    -- Тип предложения "Покупка"
-    c_active_status_id CONSTANT INTEGER := 3;               -- Статус "Новое/Активное"
-    c_approved_status_id CONSTANT INTEGER := 2;             -- Статус "Одобрено"
-    c_rejected_status_id CONSTANT INTEGER := 1;             -- Статус "Отклонено"
-    c_deposit_operation_type_id CONSTANT INTEGER := 1;      -- Тип операции деп. счёта "Зачисление ценных бумаг"
+    c_buy_type_id CONSTANT INTEGER := 1;
+    c_active_status_id CONSTANT INTEGER := 3;
+    c_approved_status_id CONSTANT INTEGER := 2;
+    c_rejected_status_id CONSTANT INTEGER := 1;
+    c_deposit_operation_type_id CONSTANT INTEGER := 1;
 	c_brokerage_operation_return_type_id CONSTANT INTEGER := 4;
 BEGIN
-    -- 1. Получаем данные предложения и проверяем его состояние
     SELECT
         p."ID брокерского счёта",
         p."ID ценной бумаги",
@@ -1727,7 +2201,6 @@ BEGIN
         RAISE EXCEPTION 'Предложение с ID % не найдено или уже обработано/не является активным предложением на покупку', p_proposal_id;
     END IF;
 
-    -- 2. Находим депозитарный счёт пользователя
     SELECT "ID депозитарного счёта"
     INTO v_deposit_account_id
     FROM public."Депозитарный счёт"
@@ -1738,9 +2211,6 @@ BEGIN
     END IF;
 
     IF p_verify THEN
-        -- === ОДОБРЕНИЕ ===
-
-        -- Проверяем наличие записи в балансе депозитарного счёта
         PERFORM 1
         FROM public."Баланс депозитарного счёта"
         WHERE "ID депозитарного счёта" = v_deposit_account_id
@@ -1751,14 +2221,12 @@ BEGIN
             RAISE EXCEPTION 'В балансе депозитарного счёта отсутствует запись для ценной бумаги ID % у пользователя ID %', v_security_id, v_user_id;
         END IF;
 
-        -- Обновляем баланс: добавляем количество ценных бумаг
         UPDATE public."Баланс депозитарного счёта"
         SET "Сумма" = "Сумма" + v_quantity
         WHERE "ID депозитарного счёта" = v_deposit_account_id
           AND "ID пользователя" = v_user_id
           AND "ID ценной бумаги" = v_security_id;
 
-        -- Создаём запись в истории операций депозитарного счёта
         INSERT INTO public."История операций деп. счёта" (
             "Сумма операции",
             "Время",
@@ -1781,24 +2249,16 @@ BEGIN
             c_deposit_operation_type_id
         )
         RETURNING "ID операции деп. счёта" INTO v_new_deposit_operation_id;
-
-        -- Меняем статус предложения на "Одобрено"
         UPDATE public."Предложение"
         SET "ID статуса предложения" = c_approved_status_id
         WHERE "ID предложения" = p_proposal_id;
-
     ELSE
-        -- === ОТКЛОНЕНИЕ ===
-
-        -- Возвращаем деньги на брокерский счёт (зачисление)
         SELECT change_brokerage_account_balance(
     p_account_id := v_brokerage_account_id,
     p_amount := v_cost,
     p_brokerage_operation_type := c_brokerage_operation_return_type_id, -- <-- Исправлено
     p_staff_id := p_employee_id
 ) INTO v_new_broker_operation_id;
-
-        -- Меняем статус предложения на "Отклонено"
         UPDATE public."Предложение"
         SET "ID статуса предложения" = c_rejected_status_id
         WHERE "ID предложения" = p_proposal_id;
@@ -1808,8 +2268,6 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.process_buy_proposal(integer, integer, boolean)
-    OWNER TO postgres;
 
 CREATE OR REPLACE FUNCTION public.process_sell_proposal(
 	p_employee_id integer,
@@ -1955,8 +2413,6 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.process_sell_proposal(integer, integer, boolean)
-    OWNER TO postgres;
 
 CREATE OR REPLACE FUNCTION process_proposal(
     p_employee_id INTEGER,
@@ -2053,7 +2509,7 @@ BEGIN
 END;
 $BODY$;
 
-CREATE OR REPLACE FUNCTION public.add_stock(
+CREATE OR REPLACE FUNCTION public.add_security(
     p_ticker character varying,
     p_isin character varying,
     p_lot_size numeric,
@@ -2144,9 +2600,6 @@ BEGIN
 END;
 $BODY$;
 
-ALTER FUNCTION public.add_stock(character varying, character varying, numeric, numeric, integer, boolean)
-    OWNER TO postgres;
-
 CREATE OR REPLACE FUNCTION public.change_stock_price(
     p_stock_id integer,               -- ID ценной бумаги
     p_new_price numeric(12,2)         -- Новая цена
@@ -2207,29 +2660,31 @@ END;
 $BODY$;
 
 
--- FUNCTION: public.verify_user_passport(integer)
-
--- DROP FUNCTION IF EXISTS public.verify_user_passport(integer);
-
-CREATE OR REPLACE FUNCTION public.verify_user_passport(
-    p_passport_id integer)
-    RETURNS void
-    LANGUAGE 'plpgsql'
-    COST 100
-    VOLATILE PARALLEL UNSAFE
-AS $BODY$
+CREATE OR REPLACE PROCEDURE public.verify_user_passport(
+    p_passport_id INTEGER,
+    OUT p_success BOOLEAN,
+    OUT p_error_message TEXT
+)
+LANGUAGE plpgsql
+AS $$
 DECLARE
-    v_user_id integer;
-    v_deposit_account_id integer;
+    v_user_id INTEGER;
+    v_deposit_account_id INTEGER;
     v_securities RECORD;
 BEGIN
+    -- Инициализируем OUT-параметры явно (обязательно, так как DEFAULT запрещён)
+    p_success := NULL;
+    p_error_message := NULL;
+
     -- Находим ID пользователя по паспорту
     SELECT "ID пользователя" INTO v_user_id
     FROM public."Паспорт"
     WHERE "ID паспорта" = p_passport_id;
 
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'Паспорт с ID % не найден', p_passport_id;
+        p_error_message := format('Паспорт с ID %s не найден', p_passport_id);
+        p_success := FALSE;
+        RETURN;
     END IF;
 
     -- Проверяем, есть ли уже депозитарный счёт у пользователя
@@ -2238,7 +2693,9 @@ BEGIN
     WHERE "ID пользователя" = v_user_id;
 
     IF FOUND THEN
-        RAISE EXCEPTION 'У пользователя с ID % уже существует депозитарный счёт. Повторная верификация паспорта невозможна.', v_user_id;
+        p_error_message := format('У пользователя с ID %s уже существует депозитарный счёт. Повторная верификация паспорта невозможна.', v_user_id);
+        p_success := FALSE;
+        RETURN;
     END IF;
 
     -- Создаём новый депозитарный счёт
@@ -2248,7 +2705,7 @@ BEGIN
         "ID пользователя"
     )
     VALUES (
-        'Договор № ' || to_char(current_date, 'YYYYMMDD') || '-' || v_user_id,  -- пример генерации номера
+        'Договор № ' || to_char(current_date, 'YYYYMMDD') || '-' || v_user_id,
         current_date,
         v_user_id
     )
@@ -2278,30 +2735,169 @@ BEGIN
     SET "Актуальность" = true
     WHERE "ID паспорта" = p_passport_id;
 
+    -- Обновляем статус верификации пользователя
+    UPDATE public."Пользователь"
+    SET "ID статуса верификации" = 2
+    WHERE "ID пользователя" = v_user_id;
+
+    -- Успешное завершение
+    p_success := TRUE;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        p_error_message := SQLERRM;
+        p_success := FALSE;
 END;
-$BODY$;
+$$;
 
-ALTER FUNCTION public.verify_user_passport(integer)
-    OWNER TO postgres;
 
--- =========================
--- 3) ТЕСТОВЫЕ ДАННЫЕ
--- =========================
-
-DO $$
-DECLARE
-    uid1 INT;  -- ID первого пользователя
-    uid2 INT;  -- ID второго пользователя
-
-    depo_id1 INT;
-    depo_id2 INT;
-
-    broker_id1 INT;
-    broker_id2 INT;
-
-    bal_id INT;
-    offer_id INT;
+CREATE OR REPLACE PROCEDURE register_user(
+    p_login VARCHAR(30),
+    p_password VARCHAR(60),
+    p_email VARCHAR(40),
+    OUT p_user_id INTEGER,
+    OUT p_error_message TEXT
+)
+LANGUAGE plpgsql
+AS $$
 BEGIN
-    RAISE NOTICE 'Начало создания тестовых данных...';
+    -- Инициализируем OUT-параметры
+    p_user_id := NULL;
+    p_error_message := NULL;
 
-END $$;
+    -- Проверяем уникальность логина
+    PERFORM 1 FROM public."Пользователь" WHERE "Логин" = p_login;
+    IF FOUND THEN
+        p_error_message := 'Логин уже занят';
+        RETURN;
+    END IF;
+
+    -- Проверяем уникальность email
+    PERFORM 1 FROM public."Пользователь" WHERE "Электронная почта" = p_email;
+    IF FOUND THEN
+        p_error_message := 'Email уже зарегистрирован';
+        RETURN;
+    END IF;
+
+    -- Принимаем уже захэшированный пароль
+    -- v_hashed_password не нужен, можно использовать p_password напрямую
+
+    -- Создаём пользователя
+    INSERT INTO public."Пользователь" (
+        "Электронная почта",
+        "Дата регистрации",
+        "Логин",
+        "Пароль",
+        "ID статуса верификации",
+        "ID статуса блокировки"
+    )
+    VALUES (
+        p_email,
+        CURRENT_DATE,
+        p_login,
+        p_password,
+        1,  -- начальный статус верификации
+        1   -- начальный статус блокировки (не заблокирован)
+    )
+    RETURNING "ID пользователя" INTO p_user_id;
+
+    -- Успех — p_error_message остаётся NULL
+
+EXCEPTION
+    WHEN OTHERS THEN
+        p_error_message := SQLERRM;
+        p_user_id := NULL;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE register_staff(
+    p_login VARCHAR(30),
+    p_password VARCHAR(60),
+    p_contract_number VARCHAR(40),
+    p_rights_level_id INTEGER,
+    p_employment_status_id INTEGER,
+    OUT p_staff_id INTEGER,
+    OUT p_error_message TEXT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    -- Инициализируем OUT-параметры
+    p_staff_id := NULL;
+    p_error_message := NULL;
+
+    -- Проверяем уникальность логина
+    PERFORM 1 FROM public."Персонал" WHERE "Логин" = p_login;
+    IF FOUND THEN
+        p_error_message := 'Логин уже занят';
+        RETURN;
+    END IF;
+
+    -- Проверяем уникальность номера договора
+    PERFORM 1 FROM public."Персонал" WHERE "Номер трудового договора" = p_contract_number;
+    IF FOUND THEN
+        p_error_message := 'Номер договора уже занят';
+        RETURN;
+    END IF;
+
+    -- Создаём сотрудника
+    INSERT INTO public."Персонал" (
+        "Номер трудового договора",
+        "Логин",
+        "Пароль",
+        "ID статуса трудоустройства",
+        "ID уровня прав"
+    )
+    VALUES (
+        p_contract_number,
+        p_login,
+        p_password,
+        p_employment_status_id,
+        p_rights_level_id
+    )
+    RETURNING "ID сотрудника" INTO p_staff_id;
+
+    -- Успех — p_error_message остаётся NULL
+
+EXCEPTION
+    WHEN OTHERS THEN
+        p_error_message := SQLERRM;
+        p_staff_id := NULL;
+END;
+$$;
+
+select add_currency('usd', '$', 100);
+select add_currency('eur', '€', 120);
+
+SELECT add_bank('ПАО Сбербанк', '7707083893', '1027700132195', '044525225', '2036-11-27'::DATE);
+SELECT add_bank('Банк ВТБ (ПАО)', '7702070139', '1027700031594', '044525187', '2032-10-17'::DATE);
+SELECT add_bank('АО "Альфа-Банк"', '7728168971', '1027700067328', '044525593', '2031-12-31'::DATE);
+SELECT add_bank('ПАО Банк "ФК Открытие"', '7706092528', '1027700389635', '044525297', '2029-08-14'::DATE);
+SELECT add_bank('АО "Тинькофф Банк"', '7710140679', '1027739642281', '044525974', '2030-06-22'::DATE);
+SELECT add_bank('ПАО "Росбанк"', '7736018783', '1027739026157', '044525256', '2033-03-15'::DATE);
+SELECT add_bank('АО "Райффайзенбанк"', '7744000303', '1027700159232', '044525700', '2030-12-31'::DATE);
+SELECT add_bank('ПАО "Совкомбанк"', '4401144210', '1047796016277', '044525360', '2031-07-10'::DATE);
+
+select add_security('SBER', 'SBER', 2, 100, 1, true);
+select add_security('AFLT', 'AFLT', 3, 10, 1, false);
+select add_security('BTC', 'BTC', 1, 100000, 2, true);
+select add_security('EURS', 'EURS', 2, 1, 3, true);
+
+-- pass: 123456
+CALL register_staff('admin', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', '8800', 2, 1, NULL, NULL);
+CALL register_staff('admin2', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', '88000', 2, 1, NULL, NULL);
+CALL register_staff('broker', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', '8801', 3, 1, NULL, NULL);
+CALL register_staff('verifier', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', '8802', 4, 1, NULL, NULL);
+
+call register_user('1', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', '12345@example.com', null, null); -- password: 123456
+select submit_passport(1, 'Медведев', 'Даниил', 'Андреевич', '0114', '439954', 'м', '2004-01-01', 'г. Барнаул', 'г. Барнаул', '2020-01-01', 'ГУ МВД РФ');
+call verify_user_passport(1, null, null);
+
+call register_user('2', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'email2@example.com', null, null);
+select submit_passport(2, 'Иванов', 'Иван', 'Иванович', '0113', '439957', 'м', '2004-01-01', 'г. Барнаул', 'г. Барнаул', '2020-01-01', 'ГУ МВД РФ');
+
+call register_user('3', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'email3@example.com', null, null);
+
+select add_brokerage_account(1, 1, 1);
+select add_brokerage_account(1, 3, 2);
+select add_brokerage_account(1, 2, 3);

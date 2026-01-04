@@ -73,26 +73,42 @@ async def get_current_user(
 
     try:
         payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: int = payload.get("user_id")
-        role: str = payload.get("role")
-        if user_id is None and role not in ["1", "2", "3", "4", "5"]:
+        sub = payload.get("sub")  # логин
+        role = payload.get("role")  # может быть число (1-5) или строка "user"
+        staff_id = payload.get("staff_id")
+        user_id = payload.get("user_id")
+
+        # Определяем тип пользователя по наличию staff_id или user_id
+        if staff_id is not None:
+            # Это сотрудник — роль должна быть числом 1-4
+            if not isinstance(role, int) or role not in [1, 2, 3, 4]:
+                raise credentials_exception
+            user_type = "staff"
+            id_to_check = staff_id
+        elif user_id is not None and role == "user":
+            user_type = "client"
+            id_to_check = user_id
+        else:
             raise credentials_exception
+
     except JWTError:
         raise credentials_exception
 
-    # Опционально: проверяем, существует ли пользователь в БД (защита от поддельных токенов)
-    if role == "user" and user_id:
-        result = await db.execute(select(User.id).where(User.id == user_id))
-        if not result.scalar_one_or_none():
+    # Проверка существования в БД (опционально, но рекомендуется)
+    if user_type == "staff":
+        exists = await db.scalar(select(Staff.id).where(Staff.id == id_to_check))
+        if exists is None:
             raise credentials_exception
-    elif role == "staff":
-        staff_id = payload.get("staff_id")
-        if not staff_id:
-            raise credentials_exception
-
-        # Проверяем существование сотрудника по ID
-        exists = await db.scalar(select(Staff.id).where(Staff.id == staff_id))  # type: ignore[arg-type]
+    else:  # client
+        exists = await db.scalar(select(User.id).where(User.id == id_to_check))
         if exists is None:
             raise credentials_exception
 
-    return {"id": user_id, "role": role, "payload": payload}
+    return {
+        "id": id_to_check,
+        "role": role,  # для staff — число, для клиента — "user"
+        "type": user_type,  # "staff" или "client"
+        "staff_id": staff_id if user_type == "staff" else None,
+        "user_id": user_id if user_type == "client" else None,
+        "payload": payload
+    }
