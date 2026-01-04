@@ -185,7 +185,7 @@ async def create_offer(
         select(Security).where(Security.id == data.security_id)
     )
     if not security:
-        raise HTTPException(404, "Ценная бумага не найдена")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Ценная бумага не найдена")
 
     # 3. Проверка валюты
     if account.currency_id != security.currency_id:
@@ -208,7 +208,7 @@ async def create_offer(
     elif data.proposal_type_id == 2:
         sql = text("SELECT add_sell_proposal(:security_id, :account_id, :lot_amount)")
     else:
-        raise HTTPException(400, "Некорректный тип предложения")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Некорректный тип предложения")
 
     await db.execute(sql, {
         "security_id": data.security_id,
@@ -396,17 +396,18 @@ async def create_balance_change_request(
     if data.amount < 0 and account.balance + data.amount < 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недостаточно средств на счёте")
 
-    # 3. Выполняем изменение баланса и запись в историю одной атомарной функцией в БД
-
     query = text(
         f"SELECT change_brokerage_account_balance(:account_id, :amount, :brokerage_operation_id, :staff_id);"
     )
     try:
+        system_staff_id = 2
+        balance_increase_id = 1
+        balance_decrease_id = 2
         await db.execute(query, {
             "account_id": account_id,
             "amount": data.amount,
-            "staff_id": 5,
-            "brokerage_operation_id": 1 if data.amount > 0 else 2
+            "staff_id": system_staff_id,
+            "brokerage_operation_id": balance_increase_id if data.amount > 0 else balance_decrease_id
         })
         await db.commit()
     except Exception as e:
@@ -419,30 +420,6 @@ async def create_balance_change_request(
         "message": "Баланс успешно изменён",
         "new_balance": float(account.balance)
     }
-
-
-class CurrencyResponse(BaseModel):
-    id: int
-    code: str
-    symbol: str
-
-    class Config:
-        from_attributes = True
-
-
-@brokerage_accounts_router.get("/currencies", response_model=list[CurrencyResponse])
-async def get_currencies(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Currency))
-    currencies = result.scalars().all()
-
-    if not currencies:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="В базе данных отсутствуют записи о валютах. Добавьте хотя бы одну валюту в таблицу \"Список валют\"."
-        )
-
-    return [CurrencyResponse(id=c.id, code=c.code, symbol=c.symbol) for c in currencies]
-
 
 class StockCreate(BaseModel):
     ticker: str
