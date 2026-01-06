@@ -31,7 +31,6 @@ from db.models.models import (
     DepositoryAccountBalance,
     DepositoryAccountHistory,
     DepositoryAccountOperationType,
-    Dividend,
     EmploymentStatus,
     Passport,
     PriceHistory,
@@ -74,7 +73,6 @@ TABLES = {
     "proposal_status": ProposalStatus,
     "brokerage_account": BrokerageAccount,
     "depository_account": DepositoryAccount,
-    "dividend": Dividend,
     "passport": Passport,
     "brokerage_account_history": BrokerageAccountHistory,
     "depository_account_history": DepositoryAccountHistory,
@@ -396,18 +394,25 @@ async def rate_to_ruble(
 
 @app.post("/api/passport", status_code=status.HTTP_201_CREATED)
 async def create_passport(
-        form_data: PassportCreateRequest,
-        current_user: dict = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db)
+    form_data: PassportCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    if current_user["role"] != "user":
+    if current_user.get("type") != "client":  # Предполагаю, что роль пользователя — "client"
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
     try:
+        # Вызов процедуры submit_passport с OUT-параметрами
         result = await db.execute(
-            text("SELECT submit_passport(:user_id, :last_name, :first_name, :patronymic, "
-                 ":series, :number, :gender, :birth_date, :birth_place, :registration_place, "
-                 ":issue_date, :issued_by)"),
+            text("""
+                CALL submit_passport(
+                    :user_id, :last_name, :first_name, :patronymic,
+                    :series, :number, :gender, :birth_date,
+                    :birth_place, :registration_place,
+                    :issue_date, :issued_by,
+                    :passport_id, :error_message
+                )
+            """),
             {
                 "user_id": current_user["id"],
                 "last_name": form_data.lastName,
@@ -421,10 +426,20 @@ async def create_passport(
                 "registration_place": form_data.registrationPlace,
                 "issue_date": form_data.issueDate.date(),
                 "issued_by": form_data.issuedBy,
+                "passport_id": None,
+                "error_message": None
             }
         )
 
-        passport_id = result.scalar_one()  # Функция возвращает ID созданного паспорта
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        passport_id = row[0]      # OUT p_passport_id
+        error_message = row[1]    # OUT p_error_message
+
+        if error_message is not None:
+            raise HTTPException(status_code=400, detail=error_message)
 
         await db.commit()
 
@@ -434,30 +449,14 @@ async def create_passport(
             "user_id": current_user["id"]
         }
 
-    except IntegrityError as exc:
-        # Обрабатываем ошибки, поднятые через RAISE EXCEPTION в submit_passport
-        orig_error = exc.orig
-        if isinstance(orig_error, asyncpg.exceptions.PostgresError):
-            error_message = str(orig_error).strip()
-            # Специфическая обработка известных сообщений
-            if "Паспорт уже привязан" in error_message:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Паспорт уже привязан к пользователю"
-                ) from exc
-            # Для остальных ошибок из функции возвращаем само сообщение
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=error_message
-            ) from exc
+    except HTTPException:
         raise
-
-    except Exception as exc:
-        # Любые другие неожиданные ошибки
+    except Exception as e:
+        await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Не удалось создать паспорт"
-        ) from exc
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось создать паспорт: {e}"
+        ) from e
 
 
 @app.get("/api/proposal/{proposal_id}")
@@ -917,33 +916,53 @@ async def update_user_verification_status(
 class BrokerageAccountCreateRequest(BaseModel):
     bank_id: int
     currency_id: int
+    inn: str  # ИНН теперь обязательное поле (строка, без пробелов)
 
 
 @app.post("/api/brokerage-accounts/")
 async def create_brokerage_account(
-        account_data: BrokerageAccountCreateRequest,
-        current_user: dict = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db)
+    account_data: BrokerageAccountCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     if current_user["role"] != "user":
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="Доступ запрещён"
         )
     try:
-        # Вызываем серверную функцию
         result = await db.execute(
-            text("SELECT add_brokerage_account(:user_id, :bank_id, :currency_id)"),
+            text("""
+                CALL add_brokerage_account(
+                    :user_id, :bank_id, :currency_id, :inn,
+                    :account_id, :error_message
+                )
+            """),
             {
                 "user_id": current_user["id"],
                 "bank_id": account_data.bank_id,
-                "currency_id": account_data.currency_id
+                "currency_id": account_data.currency_id,
+                "inn": account_data.inn.strip(),
+                "account_id": None,
+                "error_message": None
             }
         )
 
-        account_id = result.scalar_one()  # ID нового счёта
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
 
-        # Получаем данные для ответа (банк и валюта)
+        account_id = row[0]        # OUT p_account_id
+        error_message = row[1]    # OUT p_error_message
+
+        if error_message is not None:
+            if "Банк с ID" in error_message:
+                raise HTTPException(status_code=404, detail="Банк не найден")
+            if "Валюта с ID" in error_message:
+                raise HTTPException(status_code=404, detail="Валюта не найдена или архивирована")
+            raise HTTPException(status_code=400, detail=error_message)
+
+        # Получаем данные банка и валюты для ответа
         bank_result = await db.execute(select(Bank).where(Bank.id == account_data.bank_id))
         bank = bank_result.scalar_one()
 
@@ -963,41 +982,49 @@ async def create_brokerage_account(
             "user_id": current_user["id"]
         }
 
-    except IntegrityError as exc:
-        await db.rollback()
-        orig_msg = str(exc.orig).strip() if exc.orig else ""
-        if "Банк с ID" in orig_msg:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Банк не найден")
-        if "Валюта с ID" in orig_msg:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Валюта не найдена или архивирована")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=orig_msg or "Ошибка при создании счёта")
-
+    except HTTPException:
+        raise
     except Exception as exc:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Внутренняя ошибка сервера: {exc}")
-
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутренняя ошибка сервера при создании счёта"
+        )
 
 @app.delete("/api/brokerage-accounts/{brokerage_account_id}")
 async def delete_brokerage_account(
-        brokerage_account_id,
+        brokerage_account_id: int,
         current_user: dict = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
 ):
-    if current_user["role"] != "user":
+    if current_user.get("type") != "client":  # или "user" — в зависимости от вашей схемы
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
 
     try:
-        # Вызываем серверную функцию — она сделает все проверки и удаление
+        # Вызов процедуры delete_brokerage_account с OUT p_error_message
         result = await db.execute(
-            text("SELECT delete_brokerage_account(:account_id, :user_id)"),
+            text("""
+                CALL delete_brokerage_account(:account_id, :user_id, :error_message)
+            """),
             {
-                "account_id": int(brokerage_account_id),
-                "user_id": current_user["id"]
+                "account_id": brokerage_account_id,
+                "user_id": current_user["id"],
+                "error_message": None  # placeholder для OUT-параметра
             }
         )
 
-        # Функция возвращает VOID, поэтому scalar_one() вернёт None при успехе
-        result.scalar_one()
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        error_message = row[0]  # OUT p_error_message
+
+        if error_message is not None:
+            if "не найден" in error_message or "не принадлежит" in error_message:
+                raise HTTPException(status_code=404, detail="Брокерский счёт не найден или не принадлежит вам")
+            if "ненулевым балансом" in error_message:
+                raise HTTPException(status_code=400, detail="Нельзя удалить брокерский счёт с ненулевым балансом")
+            raise HTTPException(status_code=400, detail=error_message)
 
         await db.commit()
 
@@ -1005,21 +1032,14 @@ async def delete_brokerage_account(
             "detail": "Брокерский счёт успешно удалён"
         }
 
-    except IntegrityError as exc:
-        await db.rollback()
-        orig_msg = str(exc.orig).strip() if exc.orig else ""
-
-        if "не найден" in orig_msg or "не принадлежит" in orig_msg:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Брокерский счёт не найден или не принадлежит вам")
-        if "ненулевым балансом" in orig_msg:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя удалить брокерский счёт с ненулевым балансом")
-        # Любая другая ошибка из функции
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=orig_msg or "Ошибка при удалении счёта")
-
+    except HTTPException:
+        raise
     except Exception as exc:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Внутренняя ошибка сервера: {exc}")
-
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутренняя ошибка сервера при удалении счёта"
+        )
 
 
 class StockOut(BaseModel):
@@ -1077,17 +1097,26 @@ class StockCreate(BaseModel):
 async def create_stock(
     data: StockCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
+    if current_user.get("type") != "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён: требуется роль сотрудника"
+        )
+
     try:
         result = await db.execute(
             text("""
-                SELECT add_security(
+                CALL add_security(
                     :ticker,
                     :isin,
                     :lot_size,
                     :price,
                     :currency_id,
-                    :has_dividends
+                    :has_dividends,
+                    :security_id,
+                    :error_message
                 )
             """),
             {
@@ -1097,10 +1126,31 @@ async def create_stock(
                 "price": data.price,
                 "currency_id": data.currency_id,
                 "has_dividends": data.has_dividends,
+                "security_id": None,
+                "error_message": None
             }
         )
 
-        security_id = result.scalar_one()  # add_security возвращает ID ценной бумаги
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        security_id = row[0]          # OUT p_security_id
+        error_message = row[1]        # OUT p_error_message
+
+        if error_message is not None:
+            # Общие сообщения из процедуры
+            if "Размер лота" in error_message:
+                raise HTTPException(status_code=400, detail="Размер лота должен быть больше нуля")
+            if "Валюта с ID" in error_message:
+                raise HTTPException(status_code=404, detail="Валюта не найдена")
+            if "ISIN" in error_message and "уже существует" in error_message:
+                raise HTTPException(status_code=400, detail="ISIN уже существует")
+            if "тикером" in error_message and "уже существует" in error_message:
+                raise HTTPException(status_code=400, detail="Тикер уже существует")
+
+            # Любая другая ошибка из процедуры
+            raise HTTPException(status_code=400, detail=error_message)
 
         await db.commit()
 
@@ -1110,29 +1160,12 @@ async def create_stock(
             "isin": data.isin,
         }
 
-    except IntegrityError as exc:
-        await db.rollback()
-        orig_msg = str(exc.orig).strip() if exc.orig else ""
-
-        logger.warning("Ошибка при добавлении ценной бумаги: %s", orig_msg)
-
-        # Все проверки теперь в триггере и функции — сообщения из RAISE EXCEPTION
-        if "Размер лота" in orig_msg:
-            raise HTTPException(400, "Размер лота должен быть больше нуля")
-        if "Валюта с ID" in orig_msg:
-            raise HTTPException(404, "Валюта не найдена")
-        if "ISIN" in orig_msg and "уже существует" in orig_msg:
-            raise HTTPException(400, "ISIN уже существует")
-        if "тикером" in orig_msg and "уже существует" in orig_msg:
-            raise HTTPException(400, "Тикер уже существует")
-
-        # На всякий случай — общее сообщение
-        raise HTTPException(400, orig_msg or "Нарушение ограничений данных")
-
+    except HTTPException:
+        raise
     except Exception as exc:
         await db.rollback()
         logger.exception("Неожиданная ошибка при создании ценной бумаги")
-        raise HTTPException(500, "Внутренняя ошибка сервера")
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 class ProcessProposalRequest(BaseModel):
     verify: bool
@@ -1140,12 +1173,18 @@ class ProcessProposalRequest(BaseModel):
 
 @app.patch("/api/proposal/{proposal_id}/process")
 async def process_proposal(
-        proposal_id: int = Path(..., gt=0, description="ID предложения"),
-        request_data: ProcessProposalRequest = None,
-        current_user: dict = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db)
+    proposal_id: int = Path(..., gt=0, description="ID предложения"),
+    request_data: ProcessProposalRequest = None,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    payload = current_user.get("payload")
+    if current_user.get("type") != "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён: требуется роль сотрудника"
+        )
+
+    payload = current_user.get("payload", {})
     staff_id = payload.get("staff_id")
 
     if not staff_id:
@@ -1154,30 +1193,40 @@ async def process_proposal(
             detail="Не удалось определить ID сотрудника из токена"
         )
 
-    # Проверяем, что сотрудник существует
-    result = await db.execute(
-        select(Staff).where(Staff.id == staff_id)
-    )
-    staff = result.scalar_one_or_none()
-
-    if not staff:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Сотрудник с ID {staff_id} не найден"
-        )
-
     verify = request_data.verify if request_data else False
 
     try:
-        query = text("SELECT process_proposal(:staff_id, :proposal_id, :verify)")
-        await db.execute(
-            query,
+        # Вызов процедуры process_proposal с OUT p_error_message
+        result = await db.execute(
+            text("""
+                CALL process_proposal(:staff_id, :proposal_id, :verify, :error_message)
+            """),
             {
                 "staff_id": staff_id,
                 "proposal_id": proposal_id,
-                "verify": verify
+                "verify": verify,
+                "error_message": None  # placeholder для OUT-параметра
             }
         )
+
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        error_message = row[0]  # p_error_message
+
+        if error_message is not None:
+            # Определяем подходящий статус-код по содержанию ошибки
+            if "не найден" in error_message.lower():
+                status_code = status.HTTP_404_NOT_FOUND
+            elif "уже обработана" in error_message.lower() or "недопустимый статус" in error_message.lower():
+                status_code = status.HTTP_400_BAD_REQUEST
+            elif "неизвестный тип предложения" in error_message.lower():
+                status_code = status.HTTP_400_BAD_REQUEST
+            else:
+                status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            raise HTTPException(status_code=status_code, detail=error_message)
+
         await db.commit()
 
         action = "подтверждена" if verify else "отклонена"
@@ -1187,94 +1236,78 @@ async def process_proposal(
             "action": "approved" if verify else "rejected"
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
-        error_msg = str(e)
-
-        # Парсинг сообщения об ошибке из PostgreSQL
-        if "не найден" in error_msg.lower():
-            status_code = status.HTTP_404_NOT_FOUND
-        elif "уже обработана" in error_msg.lower() or "недопустимый статус" in error_msg.lower():
-            status_code = status.HTTP_400_BAD_REQUEST
-        elif "неизвестный тип предложения" in error_msg.lower():
-            status_code = status.HTTP_400_BAD_REQUEST
-        else:
-            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-
         raise HTTPException(
-            status_code=status_code,
-            detail=error_msg if status_code != status.HTTP_500_INTERNAL_SERVER_ERROR else "Внутренняя ошибка сервера при обработке заявки"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутренняя ошибка сервера при обработке заявки"
         )
-    
+
+
 @app.patch("/api/proposal/{proposal_id}/cancel")
 async def cancel_proposal(
     proposal_id: int = Path(..., gt=0, description="ID предложения"),
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    if current_user["role"] != "user":
+    if current_user.get("type") != "client":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Только клиенты могут отменять свои заявки"
         )
-    user_id = current_user["id"]
+
+    user_id = current_user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Не удалось определить ID пользователя")
+
     try:
-        # 1. Проверяем, что заявка существует и принадлежит пользователю
+        # Вызов процедуры process_proposal для отмены (verify = FALSE) от имени системного сотрудника
         result = await db.execute(
-            select(Proposal)
-            .join(Proposal.brokerage_account)
-            .options(joinedload(Proposal.status))
-            .where(
-                Proposal.id == proposal_id,
-                BrokerageAccount.user_id == user_id
-            )
-        )
-        proposal = result.scalar_one_or_none()
-        if not proposal:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Заявка не найдена или у вас нет прав для её отмены"
-            )
-        query = text("SELECT process_proposal(:staff_id, :proposal_id, :verify)")
-        await db.execute(
-            query,
+            text("""
+                CALL process_proposal(:staff_id, :proposal_id, :verify, :error_message)
+            """),
             {
-                "staff_id": SYSTEM_STAFF_ID,
+                "staff_id": SYSTEM_STAFF_ID,  # Константа с ID системного сотрудника
                 "proposal_id": proposal_id,
-                "verify": False
+                "verify": False,
+                "error_message": None
             }
         )
+
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        error_message = row[0]
+
+        if error_message is not None:
+            if "не найден" in error_message.lower():
+                status_code = status.HTTP_404_NOT_FOUND
+            elif "уже обработана" in error_message.lower() or "недопустимый статус" in error_message.lower():
+                status_code = status.HTTP_400_BAD_REQUEST
+            elif "неизвестный тип предложения" in error_message.lower():
+                status_code = status.HTTP_400_BAD_REQUEST
+            else:
+                status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            raise HTTPException(status_code=status_code, detail=error_message)
+
         await db.commit()
-        result = await db.execute(
-            select(Proposal)
-            .options(joinedload(Proposal.status))
-            .where(Proposal.id == proposal_id)
-        )
-        updated_proposal = result.scalar_one_or_none()
-        
+
         return {
             "message": f"Заявка №{proposal_id} успешно отменена",
             "proposal_id": proposal_id,
-            "new_status": updated_proposal.status.status if updated_proposal.status else "отменено",
-            "status_id": updated_proposal.status_id
+            "action": "cancelled"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        error_msg = str(e)
-        if "не найден" in error_msg.lower():
-            status_code = status.HTTP_404_NOT_FOUND
-        elif "уже обработана" in error_msg.lower() or "недопустимый статус" in error_msg.lower():
-            status_code = status.HTTP_400_BAD_REQUEST
-        elif "неизвестный тип предложения" in error_msg.lower():
-            status_code = status.HTTP_400_BAD_REQUEST
-        else:
-            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
         raise HTTPException(
-            status_code=status_code,
-            detail=error_msg if status_code != 500 else "Внутренняя ошибка сервера при отмене заявки"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутренняя ошибка сервера при отмене заявки"
         )
 
 
@@ -1525,881 +1558,6 @@ class BankUpdate(BaseModel):
     ogrn: Optional[str] = None
     bik: Optional[str] = None
     license_expiry: Optional[date] = None
-
-# ==================== CRUD эндпоинты для EmploymentStatus ====================
-
-@app.post("/api/employment_status", status_code=status.HTTP_201_CREATED)
-async def create_employment_status(
-    data: EmploymentStatusCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    try:
-        new_status = EmploymentStatus(
-            status=data.status
-        )
-        db.add(new_status)
-        await db.commit()
-        await db.refresh(new_status)
-        
-        return {
-            "id": new_status.id,
-            "status": new_status.status
-        }
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ошибка уникальности данных"
-        )
-
-@app.put("/api/employment_status/{item_id}")
-async def update_employment_status(
-    item_id: int,
-    data: EmploymentStatusUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(EmploymentStatus).where(EmploymentStatus.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Статус трудоустройства не найден"
-        )
-    
-    if data.status is not None:
-        item.status = data.status
-    
-    await db.commit()
-    await db.refresh(item)
-    
-    return {
-        "id": item.id,
-        "status": item.status
-    }
-
-@app.delete("/api/employment_status/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_employment_status(
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(EmploymentStatus).where(EmploymentStatus.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Статус трудоустройства не найден"
-        )
-    
-    # Проверка на использование в других таблицах
-    staff_check = await db.execute(
-        select(Staff).where(Staff.employment_status_id == item_id).limit(1)
-    )
-    if staff_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить статус, так как он используется в записях персонала"
-        )
-    
-    await db.delete(item)
-    await db.commit()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-# ==================== CRUD эндпоинты для VerificationStatus ====================
-
-@app.post("/api/verification_status", status_code=status.HTTP_201_CREATED)
-async def create_verification_status(
-    data: VerificationStatusCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: delete
-):
-    try:
-        new_status = VerificationStatus(
-            status=data.status
-        )
-        db.add(new_status)
-        await db.commit()
-        await db.refresh(new_status)
-        
-        return {
-            "id": new_status.id,
-            "status": new_status.status
-        }
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ошибка уникальности данных"
-        )
-
-@app.put("/api/verification_status/{item_id}")
-async def update_verification_status(
-    item_id: int,
-    data: VerificationStatusUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: delete
-):
-    result = await db.execute(
-        select(VerificationStatus).where(VerificationStatus.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Статус верификации не найден"
-        )
-    
-    if data.status is not None:
-        item.status = data.status
-    
-    await db.commit()
-    await db.refresh(item)
-    
-    return {
-        "id": item.id,
-        "status": item.status
-    }
-
-@app.delete("/api/verification_status/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_verification_status(
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(VerificationStatus).where(VerificationStatus.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Статус верификации не найден"
-        )
-    
-    # Проверка на использование в таблице пользователей
-    user_check = await db.execute(
-        select(User).where(User.verification_status_id == item_id).limit(1)
-    )
-    if user_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить статус, так как он используется в записях пользователей"
-        )
-    
-    await db.delete(item)
-    await db.commit()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-# ==================== CRUD эндпоинты для UserRestrictionStatus ====================
-
-@app.post("/api/user_restriction_status", status_code=status.HTTP_201_CREATED)
-async def create_user_restriction_status(
-    data: UserRestrictionStatusCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    try:
-        new_status = UserRestrictionStatus(
-            status=data.status
-        )
-        db.add(new_status)
-        await db.commit()
-        await db.refresh(new_status)
-        
-        return {
-            "id": new_status.id,
-            "status": new_status.status
-        }
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ошибка уникальности данных"
-        )
-
-@app.put("/api/user_restriction_status/{item_id}")
-async def update_user_restriction_status(
-    item_id: int,
-    data: UserRestrictionStatusUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(UserRestrictionStatus).where(UserRestrictionStatus.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Статус блокировки не найден"
-        )
-    
-    if data.status is not None:
-        item.status = data.status
-    
-    await db.commit()
-    await db.refresh(item)
-    
-    return {
-        "id": item.id,
-        "status": item.status
-    }
-
-@app.delete("/api/user_restriction_status/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user_restriction_status(
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(UserRestrictionStatus).where(UserRestrictionStatus.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Статус блокировки не найден"
-        )
-    
-    # Проверка на использование в таблице пользователей
-    user_check = await db.execute(
-        select(User).where(User.block_status_id == item_id).limit(1)
-    )
-    if user_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить статус, так как он используется в записях пользователей"
-        )
-    
-    await db.delete(item)
-    await db.commit()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-# ==================== CRUD эндпоинты для ProposalStatus ====================
-
-@app.post("/api/proposal_status", status_code=status.HTTP_201_CREATED)
-async def create_proposal_status(
-    data: ProposalStatusCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    try:
-        new_status = ProposalStatus(
-            status=data.status
-        )
-        db.add(new_status)
-        await db.commit()
-        await db.refresh(new_status)
-        
-        return {
-            "id": new_status.id,
-            "status": new_status.status
-        }
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ошибка уникальности данных"
-        )
-
-@app.put("/api/proposal_status/{item_id}")
-async def update_proposal_status(
-    item_id: int,
-    data: ProposalStatusUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(ProposalStatus).where(ProposalStatus.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Статус предложения не найден"
-        )
-    
-    if data.status is not None:
-        item.status = data.status
-    
-    await db.commit()
-    await db.refresh(item)
-    
-    return {
-        "id": item.id,
-        "status": item.status
-    }
-
-@app.delete("/api/proposal_status/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_proposal_status(
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(ProposalStatus).where(ProposalStatus.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Статус предложения не найден"
-        )
-    
-    # Проверка на использование в таблице предложений
-    proposal_check = await db.execute(
-        select(Proposal).where(Proposal.status_id == item_id).limit(1)
-    )
-    if proposal_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить статус, так как он используется в записях предложений"
-        )
-    
-    await db.delete(item)
-    await db.commit()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-# ==================== CRUD эндпоинты для ProposalType ====================
-
-@app.post("/api/proposal_type", status_code=status.HTTP_201_CREATED)
-async def create_proposal_type(
-    data: ProposalTypeCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    try:
-        new_type = ProposalType(
-            type=data.type
-        )
-        db.add(new_type)
-        await db.commit()
-        await db.refresh(new_type)
-        
-        return {
-            "id": new_type.id,
-            "type": new_type.type
-        }
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ошибка уникальности данных"
-        )
-
-@app.put("/api/proposal_type/{item_id}")
-async def update_proposal_type(
-    item_id: int,
-    data: ProposalTypeUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(ProposalType).where(ProposalType.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Тип предложения не найден"
-        )
-    
-    if data.type is not None:
-        item.type = data.type
-    
-    await db.commit()
-    await db.refresh(item)
-    
-    return {
-        "id": item.id,
-        "type": item.type
-    }
-
-@app.delete("/api/proposal_type/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_proposal_type(
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(ProposalType).where(ProposalType.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Тип предложения не найден"
-        )
-    
-    # Проверка на использование в таблице предложений
-    proposal_check = await db.execute(
-        select(Proposal).where(Proposal.proposal_type_id == item_id).limit(1)
-    )
-    if proposal_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить тип, так как он используется в записях предложений"
-        )
-    
-    await db.delete(item)
-    await db.commit()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-# ==================== CRUD эндпоинты для DepositoryAccountOperationType ====================
-
-@app.post("/api/depository_account_operation_type", status_code=status.HTTP_201_CREATED)
-async def create_depository_account_operation_type(
-    data: DepositoryAccountOperationTypeCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    try:
-        new_type = DepositoryAccountOperationType(
-            type=data.type
-        )
-        db.add(new_type)
-        await db.commit()
-        await db.refresh(new_type)
-        
-        return {
-            "id": new_type.id,
-            "type": new_type.type
-        }
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ошибка уникальности данных"
-        )
-
-@app.put("/api/depository_account_operation_type/{item_id}")
-async def update_depository_account_operation_type(
-    item_id: int,
-    data: DepositoryAccountOperationTypeUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
-):
-    result = await db.execute(
-        select(DepositoryAccountOperationType).where(DepositoryAccountOperationType.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Тип операции депозитарного счета не найден"
-        )
-    
-    if data.type is not None:
-        item.type = data.type
-    
-    await db.commit()
-    await db.refresh(item)
-    
-    return {
-        "id": item.id,
-        "type": item.type
-    }
-
-@app.delete("/api/depository_account_operation_type/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_depository_account_operation_type(
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user) # todo: apply unauth
-):
-    result = await db.execute(
-        select(DepositoryAccountOperationType).where(DepositoryAccountOperationType.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Тип операции депозитарного счета не найден"
-        )
-    
-    # Проверка на использование в истории операций
-    history_check = await db.execute(
-        select(DepositoryAccountHistory).where(DepositoryAccountHistory.operation_type_id == item_id).limit(1)
-    )
-    if history_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить тип, так как он используется в истории операций"
-        )
-    
-    await db.delete(item)
-    await db.commit()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-# ==================== CRUD эндпоинты для BrokerageAccountOperationType ====================
-
-@app.post("/api/brokerage_account_operation_type", status_code=status.HTTP_201_CREATED)
-async def create_brokerage_account_operation_type(
-    data: BrokerageAccountOperationTypeCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user) # todo: apply unauth
-):
-    try:
-        new_type = BrokerageAccountOperationType(
-            type_name=data.type_name
-        )
-        db.add(new_type)
-        await db.commit()
-        await db.refresh(new_type)
-        
-        return {
-            "id": new_type.id,
-            "type": new_type.type_name
-        }
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ошибка уникальности данных"
-        )
-
-@app.put("/api/brokerage_account_operation_type/{item_id}")
-async def update_brokerage_account_operation_type(
-    item_id: int,
-    data: BrokerageAccountOperationTypeUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user) # todo: apply unauth
-):
-    result = await db.execute(
-        select(BrokerageAccountOperationType).where(BrokerageAccountOperationType.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Тип операции брокерского счета не найден"
-        )
-    
-    if data.type_name is not None:
-        item.type_name = data.type_name
-    
-    await db.commit()
-    await db.refresh(item)
-    
-    return {
-        "id": item.id,
-        "type": item.type_name
-    }
-
-@app.delete("/api/brokerage_account_operation_type/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_brokerage_account_operation_type(
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
-):
-    result = await db.execute(
-        select(BrokerageAccountOperationType).where(BrokerageAccountOperationType.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Тип операции брокерского счета не найден"
-        )
-    
-    # Проверка на использование в истории операций
-    history_check = await db.execute(
-        select(BrokerageAccountHistory).where(BrokerageAccountHistory.operation_type_id == item_id).limit(1)
-    )
-    if history_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить тип, так как он используется в истории операций"
-        )
-    
-    await db.delete(item)
-    await db.commit()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-# ==================== CRUD эндпоинты для Currency ====================
-
-@app.post("/api/currency", status_code=status.HTTP_201_CREATED)
-async def create_currency(
-    data: CurrencyCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user) # todo: apply unauth
-):
-    try:
-        new_currency = Currency(
-            code=data.code,
-            symbol=data.symbol
-        )
-        db.add(new_currency)
-        await db.commit()
-        await db.refresh(new_currency)
-        
-        return {
-            "id": new_currency.id,
-            "code": new_currency.code,
-            "symbol": new_currency.symbol
-        }
-    except IntegrityError as e:
-        await db.rollback()
-        if "unique constraint" in str(e).lower() and "code" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Код валюты должен быть уникальным"
-            )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ошибка уникальности данных"
-        )
-
-@app.put("/api/currency/{item_id}")
-async def update_currency(
-    item_id: int,
-    data: CurrencyUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user) # todo: apply unauth
-):
-    result = await db.execute(
-        select(Currency).where(Currency.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Валюта не найдена"
-        )
-
-    if data.code is not None:
-        # Проверка уникальности кода валюты
-        if data.code != item.code:
-            code_check = await db.execute(
-                select(Currency).where(Currency.code == data.code, Currency.id != item_id)
-            )
-            if code_check.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Код валюты должен быть уникальным"
-                )
-        item.code = data.code
-    
-    if data.symbol is not None:
-        item.symbol = data.symbol
-    
-    await db.commit()
-    await db.refresh(item)
-
-    return {
-        "id": item.id,
-        "code": item.code,
-        "symbol": item.symbol
-    }
-
-@app.delete("/api/currency/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_currency(
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # todo: add unauth
-):
-    result = await db.execute(
-        select(Currency).where(Currency.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Валюта не найдена"
-        )
-    
-    # Проверка на использование в ценных бумагах
-    security_check = await db.execute(
-        select(Security).where(Security.currency_id == item_id).limit(1)
-    )
-    if security_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить валюту, так как она используется в ценных бумагах"
-        )
-    
-    # Проверка на использование в брокерских счетах
-    account_check = await db.execute(
-        select(BrokerageAccount).where(BrokerageAccount.currency_id == item_id).limit(1)
-    )
-    if account_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить валюту, так как она используется в брокерских счетах"
-        )
-    
-    # Проверка на использование в курсах валют
-    rate_check = await db.execute(
-        select(CurrencyRate).where(CurrencyRate.currency_id == item_id).limit(1)
-    )
-    if rate_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить валюту, так как она используется в курсах валют"
-        )
-    
-    await db.delete(item)
-    await db.commit()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-# ==================== CRUD эндпоинты для Bank ====================
-
-@app.post("/api/bank", status_code=status.HTTP_201_CREATED)
-async def create_bank(
-    data: BankCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user) # todo: apply unauth
-):
-    try:
-        # Проверка даты лицензии
-        if data.license_expiry < date.today():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Срок действия лицензии не может быть в прошлом"
-            )
-        
-        new_bank = Bank(
-            name=data.name,
-            inn=data.inn,
-            ogrn=data.ogrn,
-            bik=data.bik,
-            license_expiry=data.license_expiry
-        )
-        db.add(new_bank)
-        await db.commit()
-        await db.refresh(new_bank)
-        
-        return {
-            "id": new_bank.id,
-            "name": new_bank.name,
-            "inn": new_bank.inn,
-            "ogrn": new_bank.ogrn,
-            "bik": new_bank.bik,
-            "license_expiry": new_bank.license_expiry
-        }
-    except IntegrityError as e:
-        await db.rollback()
-        error_msg = str(e).lower()
-        if "unique constraint" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Банк с такими реквизитами уже существует"
-            )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ошибка уникальности данных"
-        )
-
-@app.put("/api/bank/{item_id}")
-async def update_bank(
-    item_id: int,
-    data: BankUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
-):
-    result = await db.execute(
-        select(Bank).where(Bank.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Банк не найден"
-        )
-    
-    if data.name is not None:
-        item.name = data.name
-    
-    if data.inn is not None:
-        item.inn = data.inn
-    
-    if data.ogrn is not None:
-        item.ogrn = data.ogrn
-    
-    if data.bik is not None:
-        item.bik = data.bik
-    
-    if data.license_expiry is not None:
-        if data.license_expiry < date.today():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Срок действия лицензии не может быть в прошлом"
-            )
-        item.license_expiry = data.license_expiry
-    
-    await db.commit()
-    await db.refresh(item)
-    
-    return {
-        "id": item.id,
-        "name": item.name,
-        "inn": item.inn,
-        "ogrn": item.ogrn,
-        "bik": item.bik,
-        "license_expiry": item.license_expiry
-    }
-
-@app.delete("/api/bank/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_bank(
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user) # todo: apply unauth
-):
-    result = await db.execute(
-        select(Bank).where(Bank.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Банк не найден"
-        )
-    
-    # Проверка на использование в брокерских счетах
-    account_check = await db.execute(
-        select(BrokerageAccount).where(BrokerageAccount.bank_id == item_id).limit(1)
-    )
-    if account_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Невозможно удалить банк, так как он используется в брокерских счетах"
-        )
-    
-    await db.delete(item)
-    await db.commit()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 class TotalSumFromLotSizeResponse(BaseModel):

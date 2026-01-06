@@ -19,7 +19,6 @@ from db.models.models import (
     DepositoryAccountBalance,
     DepositoryAccountHistory,
     DepositoryAccountOperationType,
-    Dividend,
     EmploymentStatus,
     Passport,
     PriceHistory,
@@ -168,59 +167,47 @@ async def create_offer(
     current_user = Depends(get_current_user),
 ):
     user_id = current_user["id"]
-
-    # 1. Проверка счёта
-    account = await db.scalar(
-        select(BrokerageAccount)
-        .where(
-            BrokerageAccount.id == data.account_id,
-            BrokerageAccount.user_id == user_id
-        )
+    result = await db.execute(
+        text("""
+            CALL add_proposal(
+                :user_id,
+                :security_id,
+                :account_id,
+                :proposal_type_id,
+                :lot_amount,
+                :error_message
+            )
+        """),
+        {
+            "user_id": user_id,
+            "security_id": data.security_id,
+            "account_id": data.account_id,
+            "proposal_type_id": data.proposal_type_id,
+            "lot_amount": data.quantity,
+            "error_message": None
+        }
     )
-    if not account:
-        raise HTTPException(404, "Брокерский счёт не найден")
 
-    # 2. Проверка бумаги
-    security = await db.scalar(
-        select(Security).where(Security.id == data.security_id)
-    )
-    if not security:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Ценная бумага не найдена")
+    row = result.fetchone()
+    if row is None:
+        raise Exception("Процедура не вернула результат")
 
-    # 3. Проверка валюты
-    if account.currency_id != security.currency_id:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Валюта брокерского счёта не совпадает с валютой бумаги"
-        )
+    error_message = row[0]
 
-    # 4. Проверка типа предложения
-    proposal_type = await db.scalar(
-        select(ProposalType)
-        .where(ProposalType.id == data.proposal_type_id)
-    )
-    if not proposal_type:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Некорректный тип предложения")
-
-    # 5. Создание предложения (ВНЕ if)
-    if data.proposal_type_id == 1:
-        sql = text("SELECT add_buy_proposal(:security_id, :account_id, :lot_amount)")
-    elif data.proposal_type_id == 2:
-        sql = text("SELECT add_sell_proposal(:security_id, :account_id, :lot_amount)")
-    else:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Некорректный тип предложения")
-
-    await db.execute(sql, {
-        "security_id": data.security_id,
-        "account_id": data.account_id,
-        "lot_amount": data.quantity
-    })
+    if error_message is not None:
+        if "не найдена" in error_message:
+            raise HTTPException(status_code=404, detail=error_message)
+        elif "баланс" in error_message or "недостаточно" in error_message:
+            raise HTTPException(status_code=400, detail=error_message)
+        else:
+            raise HTTPException(status_code=400, detail=error_message)
 
     await db.commit()
 
     # 6. Возвращаем созданное предложение в формате OfferResponse
     result = await db.execute(
-        text("SELECT * from get_user_offers(:user_id) LIMIT 1"),{"user_id": user_id}
+        text("SELECT * from get_user_offers(:user_id) LIMIT 1"),
+        {"user_id": user_id}
     )
 
     row = result.fetchone()
@@ -236,7 +223,6 @@ async def get_exchange_stocks(
 ):
     result = await db.execute(text("SELECT * FROM get_exchange_stocks()"))
     rows = result.fetchall()
-
     return [dict(row._mapping) for row in rows]
 
 
@@ -359,7 +345,7 @@ async def get_verification_status(
         )
 
     try:
-        query = text("SELECT public.check_user_verification_status(:user_id)")
+        query = text("SELECT public.get_user_verification_status(:user_id)")
         result = await db.execute(query, {"user_id": user_id})
         is_verified_raw = result.scalar()
 
@@ -392,27 +378,56 @@ async def create_balance_change_request(
     if not account:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден или не принадлежит вам")
 
-    # 2. Предварительная проверка на недостаток средств (на случай, если кто-то обошёл фронт)
-    if data.amount < 0 and account.balance + data.amount < 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недостаточно средств на счёте")
+    system_staff_id = 2
+    balance_increase_id = 1
+    balance_decrease_id = 2
 
-    query = text(
-        f"SELECT change_brokerage_account_balance(:account_id, :amount, :brokerage_operation_id, :staff_id);"
-    )
     try:
-        system_staff_id = 2
-        balance_increase_id = 1
-        balance_decrease_id = 2
-        await db.execute(query, {
-            "account_id": account_id,
-            "amount": data.amount,
-            "staff_id": system_staff_id,
-            "brokerage_operation_id": balance_increase_id if data.amount > 0 else balance_decrease_id
-        })
+        result = await db.execute(
+            text("""
+                CALL change_brokerage_account_balance(
+                    :account_id,
+                    :amount,
+                    :brokerage_operation_type,
+                    :staff_id,
+                    :operation_id,
+                    :error_message
+                )
+            """),
+            {
+                "account_id": account_id,
+                "amount": data.amount,
+                "brokerage_operation_type": balance_increase_id if data.amount > 0 else balance_decrease_id,
+                "staff_id": system_staff_id,
+                "operation_id": None,
+                "error_message": None
+            }
+        )
+
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        operation_id = row[0]      # OUT p_operation_id (не используется, но получаем)
+        error_message = row[1]     # OUT p_error_message
+
+        if error_message is not None:
+            if "недостаточно" in error_message.lower():
+                raise HTTPException(status_code=400, detail="Недостаточно средств на счёте")
+            if "тип операции" in error_message.lower():
+                raise HTTPException(status_code=400, detail="Некорректный тип операции")
+            if "счёт" in error_message.lower() and "не найден" in error_message.lower():
+                raise HTTPException(status_code=404, detail="Счёт не найден")
+            raise HTTPException(status_code=400, detail=error_message)
+
         await db.commit()
+
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера при изменении баланса")
 
     await db.refresh(account)
     return {

@@ -317,20 +317,6 @@ class DepositoryAccount(Base):
         return f"<DepositoryAccount(id={self.id}, contract_number='{self.contract_number}', opening_date={self.opening_date}, user_id={self.user_id})>"
 
 
-class Dividend(Base):
-    __tablename__ = "Дивиденды"
-
-    id = Column("ID дивиденда", Integer, primary_key=True, nullable=False)
-    date = Column("Дата", Date, nullable=False)
-    amount = Column("Сумма", Numeric(12,2), nullable=False)
-    security_id = Column("ID ценной бумаги", Integer, ForeignKey("Список ценных бумаг.ID ценной бумаги", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
-
-    security = relationship("Security", backref="dividends")
-
-    def __repr__(self):
-        return f"<Dividend(id={self.id}, date={self.date}, amount={self.amount}, security_id={self.security_id})>"
-
-
 class Passport(Base):
     __tablename__ = "Паспорт"
 
