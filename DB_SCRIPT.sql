@@ -554,10 +554,10 @@ ALTER TABLE "Предложение" ADD CONSTRAINT "Unique_Identifier11" PRIMAR
 CREATE TABLE "Банк"
 (
   "ID банка" Serial NOT NULL,
-  "Наименование" Character varying(120) NOT NULL,
-  "ИНН" Character varying(40) NOT NULL,
-  "ОГРН" Character varying(40) NOT NULL,
-  "БИК" Character varying(40) NOT NULL,
+  "Наименование" Character varying(120) NOT NULL UNIQUE,
+  "ИНН" Character varying(40) NOT NULL UNIQUE,
+  "ОГРН" Character varying(40) NOT NULL UNIQUE,
+  "БИК" Character varying(40) NOT NULL UNIQUE,
   "Срок действия лицензии" Date NOT NULL
 )
 WITH (autovacuum_enabled=true);
@@ -578,7 +578,7 @@ BEGIN
     END IF;
 
     IF NEW."БИК" !~ '^\d{9}$' THEN
-        RAISE EXCEPTION 'БИК должен состоять ровно из 9 цифр (получено: %)', NEW."БИК";
+        RAISE EXCEPTION 'БИК должен состоять ровно из 9 цифр (получено: %s)', NEW."БИК";
     END IF;
 
     -- Очищаем ИНН от пробелов и дефисов для проверки
@@ -599,24 +599,6 @@ BEGIN
 
     IF NEW."Срок действия лицензии" < CURRENT_DATE THEN
         RAISE EXCEPTION 'Срок действия лицензии не может быть в прошлом (указана дата: %)', NEW."Срок действия лицензии";
-    END IF;
-
-    -- Уникальность БИК (если ещё нет уникального индекса)
-    PERFORM 1
-    FROM public."Банк"
-    WHERE "БИК" = NEW."БИК"
-      AND "ID банка" IS DISTINCT FROM NEW."ID банка";
-    IF FOUND THEN
-        RAISE EXCEPTION 'Банк с БИК %s уже существует', NEW."БИК";
-    END IF;
-
-    -- Уникальность ИНН (опционально, если нужно)
-    PERFORM 1
-    FROM public."Банк"
-    WHERE "ИНН" = NEW."ИНН"
-      AND "ID банка" IS DISTINCT FROM NEW."ID банка";
-    IF FOUND THEN
-        RAISE EXCEPTION 'Банк с ИНН %s уже существует', NEW."ИНН";
     END IF;
 
     RETURN NEW;
@@ -1253,7 +1235,7 @@ BEGIN
         END IF;
         paper_value := paper_value * paper_price;
         exchange_rate := get_currency_rate(paper_currency_id, p_currency_id);
-        total_value := total_value + (paper_value / exchange_rate);
+        total_value := total_value + (paper_value * exchange_rate);
     END LOOP;
 
     RETURN COALESCE(total_value, 0);
@@ -3033,14 +3015,95 @@ BEGIN
 END;
 $BODY$;
 
+CREATE OR REPLACE PROCEDURE public.delete_bank(
+    IN p_bank_id integer,
+    OUT p_error_message character varying
+)
+LANGUAGE 'plpgsql'
+AS $BODY$
+BEGIN
+    p_error_message := NULL;
+    BEGIN
+        PERFORM 1 FROM public."Банк" WHERE "ID банка" = p_bank_id;
+        IF NOT FOUND THEN
+            p_error_message := format('Банк с ID %s не найден', p_bank_id);
+            RETURN;
+        END IF;
+
+        PERFORM 1 FROM public."Брокерский счёт" WHERE "ID банка" = p_bank_id;
+        IF FOUND THEN
+            p_error_message := format('Нельзя удалить банк с ID %s: он используется в брокерских счетах', p_bank_id);
+            RETURN;
+        END IF;
+
+        DELETE FROM public."Банк" WHERE "ID банка" = p_bank_id;
+
+        IF NOT FOUND THEN
+            p_error_message := format('Не удалось удалить банк с ID %s', p_bank_id);
+            RETURN;
+        END IF;
+
+    EXCEPTION
+        WHEN foreign_key_violation THEN
+            p_error_message := format('Нельзя удалить банк с ID %s: на него есть ссылки в других таблицах', p_bank_id);
+        WHEN OTHERS THEN
+            p_error_message := SQLERRM;
+    END;
+END;
+$BODY$;
+
+CREATE OR REPLACE PROCEDURE public.update_bank(
+    IN p_bank_id integer,
+    IN p_name character varying,
+    IN p_inn character varying,
+    IN p_ogrn character varying,
+    IN p_bik character varying,
+    IN p_license_expiry_date date,
+    OUT p_error_message character varying
+)
+LANGUAGE 'plpgsql'
+AS $BODY$
+BEGIN
+    p_error_message := NULL;
+
+    BEGIN
+        -- Проверка существования банка
+        PERFORM 1 FROM public."Банк" WHERE "ID банка" = p_bank_id;
+        IF NOT FOUND THEN
+            p_error_message := format('Банк с ID %s не найден', p_bank_id);
+            RETURN;
+        END IF;
+
+        -- Обновляем только непустые поля (NULL не меняет значение)
+        UPDATE public."Банк"
+        SET
+            "Наименование" = COALESCE(p_name, "Наименование"),
+            "ИНН" = COALESCE(p_inn, "ИНН"),
+            "ОГРН" = COALESCE(p_ogrn, "ОГРН"),
+            "БИК" = COALESCE(p_bik, "БИК"),
+            "Срок действия лицензии" = COALESCE(p_license_expiry_date, "Срок действия лицензии")
+        WHERE "ID банка" = p_bank_id;
+
+        IF NOT FOUND THEN
+            p_error_message := format('Не удалось обновить банк с ID %s', p_bank_id);
+            RETURN;
+        END IF;
+
+    EXCEPTION
+        WHEN OTHERS THEN
+            p_error_message := SQLERRM;
+    END;
+END;
+$BODY$;
+
 call add_currency('usd', '$', 100, null, null);
-call add_currency('eur', '€', 120, null, null);
+call add_currency('eur', '€', 200, null, null);
 
 call add_bank('ПАО Сбербанк', '7707083893', '1027700132195', '044525225', '2036-11-27'::DATE, null, null);
-call add_bank('Банк ВТБ (ПАО)', '7702070139', '1027700031594', '044525187', '2032-10-17'::DATE, null, null);
-call add_bank('АО "Альфа-Банк"', '7728168971', '1027700067328', '044525593', '2031-12-31'::DATE, null, null);
-call add_bank('ПАО Банк "ФК Открытие"', '7706092528', '1027700389635', '044525297', '2029-08-14'::DATE, null, null);
-call add_bank('АО "Тинькофф Банк"', '7710140679', '1027739642281', '044525974', '2030-06-22'::DATE, null, null);
+--call add_bank('Банк ВТБ (ПАО)', '7702070139', '1027700031594', '044525187', '2032-10-17'::DATE, null, null);
+--call add_bank('АО "Альфа-Банк"', '7728168971', '1027700067328', '044525593', '2031-12-31'::DATE, null, null);
+--call add_bank('ПАО Банк "ФК Открытие"', '7706092528', '1027700389635', '044525297', '2029-08-14'::DATE, null, null);
+--call add_bank('АО "Тинькофф Банк"', '7710140679', '1027739642281', '044525974', '2030-06-22'::DATE, null, null);
 
 call add_security('SBER', 'SBER', 2, 100, 1, true, null, null);
 call add_security('AFLT', 'AFLT', 3, 10, 1, false, null, null);
@@ -3063,38 +3126,8 @@ call submit_passport(2, 'Иванов', 'Иван', 'Иванович', '0113', 
 call register_user('3', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'email3@example.com', null, null);
 
 call add_brokerage_account(1, 1, 1, '500100732259', null, null);
-call add_brokerage_account(1, 1, 1, '104332181946', null, null);
-call add_brokerage_account(1, 1, 1, '600133890863', null, null);
-call add_brokerage_account(1, 1, 1, '386379402608', null, null);
-call add_brokerage_account(1, 1, 1, '542351161546', null, null);
-call add_brokerage_account(1, 1, 1, '594078161820', null, null);
-call add_brokerage_account(1, 1, 1, '495931034151', null, null);
-call add_brokerage_account(1, 1, 1, '316475255359', null, null);
-call add_brokerage_account(1, 1, 1, '419283276480', null, null);
-call add_brokerage_account(1, 1, 1, '835030564156', null, null);
-call add_brokerage_account(1, 1, 1, '395376724295', null, null);
-call add_brokerage_account(1, 1, 1, '388496965365', null, null);
-call add_brokerage_account(1, 1, 1, '287101226998', null, null);
-call add_brokerage_account(1, 1, 1, '166978480163', null, null);
-call add_brokerage_account(1, 1, 1, '845146270458', null, null);
-call add_brokerage_account(1, 1, 1, '828148932526', null, null);
-call add_brokerage_account(1, 1, 1, '288095701531', null, null);
-call add_brokerage_account(1, 1, 1, '430391171851', null, null);
-call add_brokerage_account(1, 1, 1, '227824896315', null, null);
-call add_brokerage_account(1, 1, 1, '834657871309', null, null);
-call add_brokerage_account(1, 1, 1, '315098393045', null, null);
-call add_brokerage_account(1, 1, 1, '103105183423', null, null);
-call add_brokerage_account(1, 1, 1, '738299737633', null, null);
-call add_brokerage_account(1, 1, 1, '311656670125', null, null);
-call add_brokerage_account(1, 1, 1, '065133387273', null, null);
-call add_brokerage_account(1, 1, 1, '624731781050', null, null);
-call add_brokerage_account(1, 1, 1, '801326773680', null, null);
-call add_brokerage_account(1, 1, 1, '026064746831', null, null);
-call add_brokerage_account(1, 1, 1, '723430980535', null, null);
-call add_brokerage_account(1, 1, 1, '009788208125', null, null);
-call add_brokerage_account(1, 1, 1, '219136193950', null, null);
-
 call change_brokerage_account_balance(1, 1000000, 1, 2, null, null);
+
 
 call add_proposal(1, 1, 1, 1, 1, null);
 call process_proposal(1, 1, true, null);

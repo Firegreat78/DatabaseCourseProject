@@ -1881,6 +1881,189 @@ async def get_user_block_statuses(
     statuses = result.scalars().all()
     return statuses
 
+@app.get("/api/banks")
+async def get_user_block_statuses(
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Bank).order_by(Bank.id))
+    banks = result.scalars().all()
+    return banks
+
+class BankCreateRequest(BaseModel):
+    name: str
+    inn: str
+    ogrn: str
+    bik: str
+    license_expiry_date: date
+
+@app.post("/api/banks", status_code=status.HTTP_201_CREATED)
+async def create_bank(
+    bank_data: BankCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user.get("type") != "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён: требуется роль сотрудника"
+        )
+    try:
+        result = await db.execute(
+            text("""
+                CALL add_bank(
+                    :name, :inn, :ogrn, :bik, :license_expiry_date,
+                    :bank_id, :error_message
+                )
+            """),
+            {
+                "name": bank_data.name.strip(),
+                "inn": bank_data.inn.strip(),
+                "ogrn": bank_data.ogrn.strip(),
+                "bik": bank_data.bik.strip(),
+                "license_expiry_date": bank_data.license_expiry_date,
+                "bank_id": None,
+                "error_message": None
+            }
+        )
+
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        bank_id       = row[0]
+        error_message = row[1]
+
+        if error_message is not None:
+            raise HTTPException(status_code=400, detail=error_message)
+
+        await db.commit()
+
+        return {
+            "message": "Банк успешно добавлен",
+            "bank_id": bank_id,
+            "name": bank_data.name.strip()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера при добавлении банка: {exc}"
+        )
+
+@app.delete("/api/banks/{bank_id}")
+async def delete_bank(
+    bank_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user.get("type") != "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён: требуется роль сотрудника"
+        )
+
+    try:
+        result = await db.execute(
+            text("CALL delete_bank(:bank_id, :error_message)"),
+            {"bank_id": bank_id, "error_message": None}
+        )
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        error_message = row[0]
+
+        if error_message is not None:
+            raise HTTPException(status_code=400, detail=error_message)
+
+        await db.commit()
+
+        return {
+            "message": f"Банк с ID {bank_id} успешно удалён"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Внутренняя ошибка сервера при удалении банка: {exc}"
+        )
+class BankUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    inn: Optional[str] = None
+    ogrn: Optional[str] = None
+    bik: Optional[str] = None
+    license_expiry_date: Optional[date] = None
+
+
+@app.put("/api/banks/{bank_id}")
+async def update_bank(
+    bank_id: int,
+    bank_data: BankUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user.get("type") != "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён: требуется роль сотрудника"
+        )
+
+    # Если ничего не передано — ошибка
+    if all(v is None for v in bank_data.model_dump().values()):
+        raise HTTPException(status_code=400, detail="Нет данных для обновления")
+
+    try:
+        result = await db.execute(
+            text("""
+                CALL update_bank(
+                    :bank_id,
+                    :name,
+                    :inn,
+                    :ogrn,
+                    :bik,
+                    :license_expiry_date,
+                    :error_message
+                )
+            """),
+            {
+                "bank_id": bank_id,
+                "name": bank_data.name,
+                "inn": bank_data.inn,
+                "ogrn": bank_data.ogrn,
+                "bik": bank_data.bik,
+                "license_expiry_date": bank_data.license_expiry_date,
+                "error_message": None
+            }
+        )
+
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        error_message = row[0]
+
+        if error_message is not None:
+            raise HTTPException(status_code=400, detail=error_message)
+
+        await db.commit()
+
+        return {"message": "Банк успешно обновлён"}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера при обновлении банка: {str(exc)}"
+        )
+
 @app.get("/api/{table_name}")
 async def get_table_data(table_name: str, db: AsyncSession = Depends(get_db)):
     model = TABLES.get(table_name)
