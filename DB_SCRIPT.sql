@@ -164,8 +164,6 @@ $$;
 
 -- Create tables section -------------------------------------------------
 
--- Table Паспорт
-
 CREATE TABLE "Паспорт"
 (
   "ID паспорта" Serial NOT NULL,
@@ -230,8 +228,6 @@ CREATE TABLE "Статус трудоустройства"
 WITH (autovacuum_enabled=true);
 ALTER TABLE "Статус трудоустройства" ADD CONSTRAINT "Unique_Identifier7" PRIMARY KEY ("ID статуса трудоустройства");
 
--- Table Депозитарный счёт
-
 CREATE TABLE "Депозитарный счёт"
 (
   "ID депозитарного счёта" Serial NOT NULL,
@@ -263,15 +259,12 @@ CREATE TRIGGER trg_prevent_negative_depo_balance
     FOR EACH ROW
     EXECUTE FUNCTION prevent_negative_balance();
 
--- Table Список ценных бумаг
-
 CREATE TABLE "Список ценных бумаг"
 (
   "ID ценной бумаги" Serial NOT NULL,
   "Наименование" Character varying(120) NOT NULL UNIQUE,
   "Размер лота" Numeric(12,2) NOT NULL,
   "ISIN" Character varying(40) NOT NULL UNIQUE,
-  "Выплата дивидендов" Boolean NOT NULL,
   "ID валюты" Integer NOT NULL
 )
 WITH (autovacuum_enabled=true);
@@ -314,8 +307,6 @@ CREATE TRIGGER trg_validate_security_before_insert_or_update
     BEFORE INSERT OR UPDATE ON public."Список ценных бумаг"
     FOR EACH ROW
     EXECUTE FUNCTION public.trg_validate_security_before_insert();
-
--- Table История операций деп. счёта
 
 CREATE TABLE "История операций деп. счёта" (
   "ID операции деп. счёта" Serial NOT NULL,
@@ -413,8 +404,6 @@ CREATE INDEX "IX_Relationship29" ON "История операций бр. сч�
 CREATE INDEX "IX_Relationship33" ON "История операций бр. счёта" ("ID типа операции бр. счёта");
 ALTER TABLE "История операций бр. счёта" ADD CONSTRAINT "Unique_Identifier17" PRIMARY KEY ("ID операции бр. счёта","ID брокерского счёта");
 
--- Table Тип операции брокерского счёта
-
 CREATE TABLE "Тип операции брокерского счёта"
 (
   "ID типа операции бр. счёта" Serial NOT NULL,
@@ -423,7 +412,6 @@ CREATE TABLE "Тип операции брокерского счёта"
 WITH (autovacuum_enabled=true);
 ALTER TABLE "Тип операции брокерского счёта" ADD CONSTRAINT "Unique_Identifier2" PRIMARY KEY ("ID типа операции бр. счёта");
 
--- Table Список валют
 CREATE TABLE "Список валют"
 (
   "ID валюты" Serial NOT NULL,
@@ -434,23 +422,20 @@ CREATE TABLE "Список валют"
 WITH (autovacuum_enabled=true);
 ALTER TABLE "Список валют" ADD CONSTRAINT "Unique_Identifier6" PRIMARY KEY ("ID валюты");
 
-INSERT INTO "Список валют"("Код", "Символ", "Статус архивации")
-VALUES
-('RUB', '₽', false);
+INSERT INTO "Список валют" ("Код", "Символ", "Статус архивации")
+VALUES ('RUB', '₽', false);
 
 CREATE OR REPLACE FUNCTION validate_currency_fields()
 RETURNS TRIGGER AS $$
 BEGIN
     -- Запрещаем УДАЛЕНИЕ записи с ID = 1
     IF TG_OP = 'DELETE' AND OLD."ID валюты" = 1 THEN
-        RAISE EXCEPTION 'Удаление базовой валюты с ID = 1 запрещено'
+        RAISE EXCEPTION 'Удаление базовой валюты (RUB) с ID = 1 запрещено'
               USING ERRCODE = 'check_violation';
     END IF;
 
-    -- Запрещаем любое изменение (UPDATE) записи с ID = 1
-    -- (это обычно базовая валюта, например RUB, которую нельзя менять)
     IF TG_OP = 'UPDATE' AND OLD."ID валюты" = 1 THEN
-        RAISE EXCEPTION 'Изменение базовой валюты с ID = 1 запрещено'
+        RAISE EXCEPTION 'Изменение базовой валюты (RUB) с ID = 1 запрещено'
               USING ERRCODE = 'check_violation';
     END IF;
 
@@ -460,7 +445,6 @@ BEGIN
               USING ERRCODE = 'check_violation';
     END IF;
 
-    -- Запрещаем создание записи с ID = 1 (если вдруг кто-то попробует)
     IF TG_OP = 'INSERT' AND NEW."ID валюты" = 1 THEN
         RAISE EXCEPTION 'Создание записи с ID валюты = 1 запрещено. Этот ID зарезервирован для системной валюты'
               USING ERRCODE = 'check_violation';
@@ -468,16 +452,13 @@ BEGIN
 
     -- Приводим код к верхнему регистру
     NEW."Код" := UPPER(TRIM(NEW."Код"));
-    IF char_length(NEW."Код") != 3 THEN
-        RAISE EXCEPTION 'Поле "Код" должно содержать ровно 3 символа. Текущая длина: %s', char_length(NEW."Код");
-    END IF;
 
     IF NEW."Код" !~ '^[A-Z]{3}$' THEN
         RAISE EXCEPTION 'Поле "Код" должно состоять из 3 латинских букв в верхнем регистре (A-Z). Полученное значение: "%"', NEW."Код";
     END IF;
 
-    IF NEW."Символ" ~ '\s' THEN
-        RAISE EXCEPTION 'Поле "Символ" не должно содержать пробелов, табуляций и других whitespace-символов';
+    IF NEW."Символ" ~ '\s' OR CHARACTER_LENGTH(NEW."Символ") = 0 THEN
+        RAISE EXCEPTION 'Поле "Символ" не должно быть пустым или содержать пробелов, табуляций и других whitespace-символов';
     END IF;
 
     -- Проверка уникальности "Код" среди неархивированных валют
@@ -513,8 +494,6 @@ CREATE TRIGGER check_currency_fields_before_insert_or_update
     FOR EACH ROW
     EXECUTE FUNCTION validate_currency_fields();
 
--- Table Тип предложения
-
 CREATE TABLE "Тип предложения"
 (
   "ID типа предложения" Serial NOT NULL,
@@ -522,8 +501,6 @@ CREATE TABLE "Тип предложения"
 )
 WITH (autovacuum_enabled=true);
 ALTER TABLE "Тип предложения" ADD CONSTRAINT "Unique_Identifier3" PRIMARY KEY ("ID типа предложения");
-
--- Table Предложение
 
 CREATE TABLE "Статус предложения"
 (
@@ -549,8 +526,6 @@ CREATE INDEX "IX_Relationship20" ON "Предложение" ("ID ценной �
 CREATE INDEX "IX_Relationship36" ON "Предложение" ("ID типа предложения");
 ALTER TABLE "Предложение" ADD CONSTRAINT "Unique_Identifier11" PRIMARY KEY ("ID предложения","ID брокерского счёта");
 
--- Table Банк
-
 CREATE TABLE "Банк"
 (
   "ID банка" Serial NOT NULL,
@@ -567,7 +542,6 @@ CREATE OR REPLACE FUNCTION public.trg_validate_bank_before_insert_or_update()
 RETURNS TRIGGER AS
 $BODY$
 BEGIN
-    -- Убираем лишние пробелы
     NEW."Наименование" := TRIM(NEW."Наименование");
     NEW."ИНН" := TRIM(NEW."ИНН");
     NEW."ОГРН" := TRIM(NEW."ОГРН");
@@ -578,10 +552,8 @@ BEGIN
     END IF;
 
     IF NEW."БИК" !~ '^\d{9}$' THEN
-        RAISE EXCEPTION 'БИК должен состоять ровно из 9 цифр (получено: %s)', NEW."БИК";
+        RAISE EXCEPTION 'БИК должен состоять ровно из 9 цифр (получено: %)', NEW."БИК";
     END IF;
-
-    -- Очищаем ИНН от пробелов и дефисов для проверки
     IF length(replace(replace(NEW."ИНН", ' ', ''), '-', '')) = 10 THEN
         IF NOT validate_russian_inn_legal(NEW."ИНН") THEN
             RAISE EXCEPTION 'Некорректный ИНН юридического лица: %', NEW."ИНН"
@@ -606,13 +578,10 @@ END;
 $BODY$
 LANGUAGE plpgsql VOLATILE;
 
--- Привязываем триггер
 CREATE TRIGGER trg_bank_validation
     BEFORE INSERT OR UPDATE ON public."Банк"
     FOR EACH ROW
     EXECUTE FUNCTION public.trg_validate_bank_before_insert_or_update();
-
--- Table История цены
 
 CREATE TABLE "История цены"
 (
@@ -620,7 +589,7 @@ CREATE TABLE "История цены"
   "Дата" Date NOT NULL,
   "Цена" Numeric(12,2) NOT NULL,
   "ID ценной бумаги" Integer NOT NULL,
-  UNIQUE ("Дата", "Цена")
+  UNIQUE ("Дата", "ID ценной бумаги")
 )
 WITH (autovacuum_enabled=true);
 CREATE INDEX "IX_Relationship50" ON "История цены" ("ID ценной бумаги");
@@ -630,9 +599,8 @@ ALTER TABLE "История цены" ADD CONSTRAINT "Unique_Identifier15" PRIMA
 CREATE OR REPLACE FUNCTION check_history_price_non_negative()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Проверяем, что цена не меньше нуля
-    IF NEW."Цена" < 0 THEN
-        RAISE EXCEPTION 'Цена не может быть меньше нуля. Полученное значение: %s', NEW."Цена";
+    IF NEW."Цена" <= 0 THEN
+        RAISE EXCEPTION 'Цена должна быть положительной. Полученное значение: %', NEW."Цена";
     END IF;
     RETURN NEW;
 END;
@@ -648,7 +616,7 @@ CREATE TABLE currency_rate (
     currency_id INT NOT NULL,
     rate NUMERIC(20, 8) NOT NULL,
     rate_date DATE NOT NULL DEFAULT CURRENT_DATE,
-    UNIQUE (currency_id, rate_date) -- Один курс на пару в день
+    UNIQUE (currency_id, rate_date)
 );
 
 CREATE OR REPLACE FUNCTION check_currency_rate_positive()
@@ -656,12 +624,10 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    -- Проверяем, что курс положительный
     IF NEW.rate <= 0 THEN
         RAISE EXCEPTION 'Курс валюты должен быть положительным числом. Получено: %s', NEW.rate;
     END IF;
 
-    -- Также можно проверить, что курс не NULL (хотя у нас есть NOT NULL constraint)
     IF NEW.rate IS NULL THEN
         RAISE EXCEPTION 'Курс валюты не может быть NULL';
     END IF;
@@ -878,7 +844,6 @@ ADD CONSTRAINT "Relationship53"
     ON DELETE RESTRICT
     ON UPDATE RESTRICT;
 
--- Справочники, которые не будут изменяться
 INSERT INTO "Тип операции депозитарного счёта"("Тип")
 VALUES
 ('Покупка'),
@@ -924,7 +889,6 @@ VALUES
 ('Подтверждён'),
 ('Ожидает верификации');
 
--- Справочники, которые могут изменяться
 INSERT INTO "Статус трудоустройства"("Статус трудоустройства")
 VALUES
 ('Активен'),
@@ -951,13 +915,9 @@ BEGIN
     FROM "Пользователь" u
     INNER JOIN "Статус верификации" v ON u."ID статуса верификации" = v."ID статуса верификации"
     WHERE u."ID пользователя" = user_id;
-
-    -- Если запись не найдена, возвращаем false
     IF NOT FOUND THEN
         RETURN false;
     END IF;
-
-    -- Возвращаем true если статус "Подтверждён", иначе false
     RETURN verification_status_text = 'Подтверждён';
 END;
 $$ LANGUAGE plpgsql;
@@ -968,7 +928,6 @@ RETURNS TABLE (
     security_name TEXT,
     lot_size NUMERIC(12,2),
     isin TEXT,
-    has_dividends BOOLEAN,
     amount DECIMAL,
     currency_code CHAR(3),
     currency_symbol VARCHAR(10)
@@ -977,7 +936,6 @@ RETURNS TABLE (
         s."Наименование" AS security_name,
         s."Размер лота" AS lot_size,
         s."ISIN" AS isin,
-        s."Выплата дивидендов" AS has_dividends,
         bds."Сумма" AS amount,
         c."Код" AS currency_code,
         c."Символ" AS currency_symbol
@@ -994,7 +952,14 @@ $$ LANGUAGE sql;
 
 CREATE OR REPLACE FUNCTION public.get_user_offers(
 	user_id integer)
-    RETURNS TABLE(id integer, "offer_type" text, "security_name" text, "quantity" numeric, "proposal_status" integer)
+    RETURNS TABLE(
+    id integer,
+    "offer_type" text,
+    "security_name" text,
+    "security_isin" text,
+    "quantity" numeric,
+    "proposal_status" integer
+    )
     LANGUAGE 'sql'
     COST 100
     VOLATILE PARALLEL UNSAFE
@@ -1005,6 +970,7 @@ AS $BODY$
 		p."ID предложения" AS "id",
         t."Тип" AS "offer_type",
         b."Наименование" AS "security_name",
+        b."ISIN" AS "security_isin",
         p."Сумма" AS "quantity",
 		p."ID статуса предложения" AS "proposal_status"
     FROM "Предложение" p
@@ -1023,6 +989,8 @@ CREATE OR REPLACE FUNCTION public.get_exchange_stocks()
 RETURNS TABLE (
     id              INTEGER,
     ticker          VARCHAR,
+    isin            VARCHAR,
+    lot_size        NUMERIC(12,2),
     price           NUMERIC(12,2),
     currency        VARCHAR(10),
     change          NUMERIC(6,2)
@@ -1045,6 +1013,8 @@ prices AS (
     SELECT
         s."ID ценной бумаги" AS id,
         s."Наименование" AS ticker,
+		s."ISIN" as isin,
+		s."Размер лота" AS lot_size,
         lp."Цена" AS last_price,
         prev."Цена" AS prev_price,
         c."Символ" AS currency
@@ -1061,6 +1031,8 @@ prices AS (
 SELECT
     id,
     ticker,
+	isin,
+	lot_size,
     last_price AS price,
     currency,
     CASE
@@ -2570,7 +2542,6 @@ CREATE OR REPLACE PROCEDURE public.add_security(
     p_lot_size numeric,
     p_price numeric,
     p_currency_id integer,
-    p_has_dividends boolean,
     OUT p_security_id integer,
     OUT p_error_message character varying
 )
@@ -2605,13 +2576,11 @@ BEGIN
             "Наименование",
             "Размер лота",
             "ISIN",
-            "Выплата дивидендов",
             "ID валюты"
         ) VALUES (
             p_ticker,
             p_lot_size,
             p_isin,
-            p_has_dividends,
             p_currency_id
         )
         RETURNING "ID ценной бумаги" INTO v_security_id;
@@ -2904,13 +2873,6 @@ BEGIN
             RETURN;
         END IF;
 
-        -- Проверка, что цена положительная
-        IF p_new_price <= 0 THEN
-            p_error_message := format('Цена должна быть строго больше нуля (получено: %s)', p_new_price);
-            RETURN;
-        END IF;
-
-        -- Проверяем, есть ли уже запись на сегодняшнюю дату
         SELECT 1 INTO v_exists
         FROM public."История цены"
         WHERE "ID ценной бумаги" = p_stock_id
@@ -3105,10 +3067,10 @@ call add_bank('ПАО Сбербанк', '7707083893', '1027700132195', '0445252
 --call add_bank('ПАО Банк "ФК Открытие"', '7706092528', '1027700389635', '044525297', '2029-08-14'::DATE, null, null);
 --call add_bank('АО "Тинькофф Банк"', '7710140679', '1027739642281', '044525974', '2030-06-22'::DATE, null, null);
 
-call add_security('SBER', 'SBER', 2, 100, 1, true, null, null);
-call add_security('AFLT', 'AFLT', 3, 10, 1, false, null, null);
-call add_security('BTC', 'BTC', 1, 100000, 2, true, null, null);
-call add_security('EURS', 'EURS', 2, 1, 3, true, null, null);
+call add_security('Сбербанк', 'SBER', 2, 100, 1, null, null);
+call add_security('Аэрофлот', 'AFLT', 3, 10, 1, null, null);
+call add_security('Биткоин', 'BTC', 1, 100000, 2, null, null);
+call add_security('Евро-бумага', 'EURS', 2, 1, 3, null, null);
 
 -- pass: 123456
 call register_staff('admin', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', '8800', 2, 1, NULL, NULL);

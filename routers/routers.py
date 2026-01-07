@@ -3,6 +3,8 @@ from typing import List
 from sqlalchemy import text, insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+
+import core.config
 from db.session import get_db
 from db.auth import get_current_user
 from pydantic import BaseModel, Field, PositiveFloat, validator, field_validator
@@ -85,7 +87,6 @@ class SecuritiesResponse(BaseModel):
     security_name: str
     lot_size: float
     isin: str
-    has_dividends: bool
     amount: float
     currency_code: str
     currency_symbol: str
@@ -111,7 +112,6 @@ async def get_portfolio_securities(
             "security_name": row.security_name,
             "lot_size": float(row.lot_size) if row.lot_size is not None else None,
             "isin": row.isin,
-            "has_dividends": row.has_dividends,
             "amount": float(row.amount) if row.amount is not None else None,
             "currency_code": row.currency_code,
             "currency_symbol": row.currency_symbol,
@@ -125,12 +125,13 @@ class OfferResponse(BaseModel):
     id: int
     offer_type: str
     security_name: str
+    security_isin: str
     quantity: float
     proposal_status: int
 
 @brokerage_accounts_router.get(
     "/offers",
-    response_model=list[OfferResponse]
+    response_model=List[OfferResponse]
 )
 async def get_user_offers(
     current_user = Depends(get_current_user),
@@ -215,15 +216,6 @@ async def create_offer(
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Предложение создано, но не найдено")
 
     return OfferResponse(**row._mapping)
-
-
-@brokerage_accounts_router.get("/exchange/stocks")
-async def get_exchange_stocks(
-    db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(text("SELECT * FROM get_exchange_stocks()"))
-    rows = result.fetchall()
-    return [dict(row._mapping) for row in rows]
 
 
 @brokerage_accounts_router.get("/brokerage-accounts/{account_id}/operations")
@@ -436,57 +428,7 @@ async def create_balance_change_request(
         "new_balance": float(account.balance)
     }
 
-class StockCreate(BaseModel):
-    ticker: str
-    isin: str
-    lot_size: Decimal = Decimal("1.00")
-    price: Decimal
-    currency_id: int
-    has_dividends: bool = False
-
-@brokerage_accounts_router.post("/exchange/stocks", status_code=status.HTTP_201_CREATED)
-async def create_stock(
-    data: StockCreate,
-    db: AsyncSession = Depends(get_db),
-):
-    try:
-        # Вызываем нашу PL/pgSQL функцию add_stock, которая делает все проверки и вставки
-        result = await db.execute(
-            text("""
-                SELECT public.add_stock(
-                    :ticker,
-                    :isin,
-                    :lot_size,
-                    :price,
-                    :currency_id,
-                    :has_dividends
-                )
-            """),
-            {
-                "ticker": data.ticker,
-                "isin": data.isin,
-                "lot_size": data.lot_size,
-                "price": data.price,
-                "currency_id": data.currency_id,
-                "has_dividends": data.has_dividends,
-            }
-        )
-        await db.commit()
-        new_security_id = result.scalar_one()
-
-        return {
-            "message": "Акция успешно добавлена",
-            "id": new_security_id,
-        }
-
-    except Exception as e:
-        # Перехватываем ошибки из функции (RAISE EXCEPTION в PL/pgSQL)
-        if "RAISE" in str(e) or "Exception" in str(e):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.orig))
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при добавлении акции")
-
-
-class CheckBannedStatus(BaseModel):
+class BanStatusOut(BaseModel):
     is_banned: bool
 
     class Config:
@@ -495,7 +437,7 @@ class CheckBannedStatus(BaseModel):
 
 @brokerage_accounts_router.get(
     "/user_ban_status/{user_id}",
-    response_model=CheckBannedStatus,
+    response_model=BanStatusOut,
     status_code=status.HTTP_200_OK
 )
 async def get_banned_status(
@@ -513,7 +455,7 @@ async def get_banned_status(
             detail="Пользователь не найден"
         )
     ban_status_id = row[0]
-    return CheckBannedStatus(is_banned=(ban_status_id == 2))
+    return BanStatusOut(is_banned=(ban_status_id == core.config.USER_BAN_STATUS_ID))
 
 
 # Схема для одной операции

@@ -570,7 +570,7 @@ async def get_proposal_detail(
         db: AsyncSession = Depends(get_db),
         current_user: dict = Depends(get_current_user)
 ):
-    if current_user.get("role") != BROKER_ROLE:
+    if current_user.get("role") != BROKER_EMPLOYEE_ROLE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Доступ запрещен: вы не являетесь брокером"
@@ -610,7 +610,7 @@ async def get_all_proposals(
         db: AsyncSession = Depends(get_db),
         current_user: dict = Depends(get_current_user)
 ):
-    if current_user.get("role") != BROKER_ROLE:
+    if current_user.get("role") != BROKER_EMPLOYEE_ROLE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Доступ запрещен: вы не являетесь брокером {current_user}"
@@ -757,7 +757,7 @@ async def register_staff(
     current_user: dict = Depends(get_current_user)
 ):
     # Проверка прав доступа остаётся на Python-стороне
-    if current_user.get("role") not in {MEGAADMIN_ROLE, ADMIN_ROLE}:
+    if current_user.get("role") not in {MEGAADMIN_EMPLOYEE_ROLE, ADMIN_EMPLOYEE_ROLE}:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Доступ запрещен: вы не являетесь администратором"
@@ -861,7 +861,7 @@ async def delete_user_passport(
         db: AsyncSession = Depends(get_db),
         current_user: dict = Depends(get_current_user)
 ):
-    if current_user.get("role") != VERIFIER_ROLE:
+    if current_user.get("role") != VERIFIER_EMPLOYEE_ROLE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Доступ запрещен: вы не являетесь верификатором"
@@ -1060,7 +1060,6 @@ class StockCreate(BaseModel):
     lot_size: int
     price: Decimal
     currency_id: int
-    has_dividends: bool = False
 
     @field_validator("ticker")
     @classmethod
@@ -1114,7 +1113,6 @@ async def create_stock(
                     :lot_size,
                     :price,
                     :currency_id,
-                    :has_dividends,
                     :security_id,
                     :error_message
                 )
@@ -1125,7 +1123,6 @@ async def create_stock(
                 "lot_size": Decimal(data.lot_size),
                 "price": data.price,
                 "currency_id": data.currency_id,
-                "has_dividends": data.has_dividends,
                 "security_id": None,
                 "error_message": None
             }
@@ -1465,30 +1462,9 @@ async def call_verify_user_passport(
     
 @app.get("/api/exchange/stocks")
 async def get_stocks(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(
-            Security.id,
-            Security.name,
-            Security.isin,
-            PriceHistory.price,
-            Currency.code
-        )
-        .join(PriceHistory, PriceHistory.security_id == Security.id)
-        .join(Currency, Currency.id == Security.currency_id)
-        .order_by(Security.name)
-    )
-
-    return [
-        {
-            "id": row.id,
-            "ticker": row.name,
-            "isin": row.isin,
-            "price": float(row.price),
-            "currency": row.code,
-            "change": 0.0,  # placeholder
-        }
-        for row in result
-    ]
+    result = await db.execute(text("SELECT * FROM get_exchange_stocks()"))
+    rows = result.fetchall()
+    return [dict(row._mapping) for row in rows]
 
 class DictionaryItemCreate(BaseModel):
     """Общая модель для создания элемента справочника"""

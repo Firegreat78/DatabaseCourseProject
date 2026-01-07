@@ -93,13 +93,12 @@ class Security(Base):
     name = Column("Наименование", String(120), nullable=False)
     lot_size = Column("Размер лота", Numeric(12, 2), nullable=False)
     isin = Column("ISIN", String(40), nullable=False)
-    dividend_payment = Column("Выплата дивидендов", Boolean, nullable=False)
     currency_id = Column("ID валюты", Integer, ForeignKey("Список валют.ID валюты", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
 
     currency = relationship("Currency", backref="securities")
 
     def __repr__(self):
-        return f"<Security(id={self.id}, name='{self.name}', lot_size={self.lot_size}, isin='{self.isin}', dividend_payment={self.dividend_payment}, currency_id={self.currency_id})>"
+        return f"<Security(id={self.id}, name='{self.name}', lot_size={self.lot_size}, isin='{self.isin}', currency_id={self.currency_id})>"
 
 
 class Currency(Base):
