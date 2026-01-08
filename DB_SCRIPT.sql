@@ -885,9 +885,9 @@ VALUES
 
 INSERT INTO "Статус предложения"("Статус")
 VALUES
-('Не подтверждён'),
-('Подтверждён'),
-('Ожидает верификации');
+('Отклонено'),
+('Одобрено'),
+('На рассмотрении');
 
 INSERT INTO "Статус трудоустройства"("Статус трудоустройства")
 VALUES
@@ -1014,39 +1014,49 @@ prices AS (
     SELECT
         s."ID ценной бумаги" AS id,
         s."Наименование" AS ticker,
-		s."ISIN" as isin,
-		s."Размер лота" AS lot_size,
+        s."ISIN" AS isin,
+        s."Размер лота" AS lot_size,
+
         lp."Цена" AS last_price,
         prev."Цена" AS prev_price,
+
         c."Символ" AS currency,
-		s."Статус архивации" AS is_archived
+        s."Статус архивации" AS is_archived
+
     FROM "Список ценных бумаг" s
-    JOIN last_prices lp
+
+    LEFT JOIN last_prices lp
         ON lp."ID ценной бумаги" = s."ID ценной бумаги"
        AND lp.rn = 1
+
     LEFT JOIN last_prices prev
         ON prev."ID ценной бумаги" = s."ID ценной бумаги"
        AND prev.rn = 2
+
     JOIN "Список валют" c
         ON c."ID валюты" = s."ID валюты"
 )
 SELECT
     id,
     ticker,
-	isin,
-	lot_size,
-    last_price AS price,
+    isin,
+    lot_size,
+
+    COALESCE(last_price, 0) AS price,
     currency,
+
     CASE
-        WHEN prev_price IS NULL OR prev_price = 0 THEN 0
+        WHEN prev_price IS NULL OR prev_price = 0 OR last_price IS NULL THEN 0
         ELSE ROUND(
             ((last_price - prev_price) / prev_price) * 100,
             2
         )
     END AS change,
-	is_archived
+
+    is_archived
 FROM prices
 ORDER BY isin;
+
 $$;
 
 
@@ -1090,7 +1100,24 @@ DECLARE
     rate1 NUMERIC(20,8);        -- курс currency1 к RUB
     rate2 NUMERIC(20,8);        -- курс currency2 к RUB
     found_date DATE;
+    currency1_archived BOOLEAN;
+    currency2_archived BOOLEAN;
 BEGIN
+    -- Проверяем, не являются ли валюты архивными
+    SELECT "Статус архивации" INTO currency1_archived
+    FROM "Список валют"
+    WHERE "ID валюты" = p_currency1;
+
+    SELECT "Статус архивации" INTO currency2_archived
+    FROM "Список валют"
+    WHERE "ID валюты" = p_currency2;
+
+    -- Если одна из валют не найдена или архивна, возвращаем 0
+    IF currency1_archived IS NULL OR currency1_archived = TRUE OR
+       currency2_archived IS NULL OR currency2_archived = TRUE THEN
+        RETURN 0.0;
+    END IF;
+
     -- Курс для currency1 (RUB → currency1)
     IF p_currency1 = base_id THEN
         rate1 := 1.0;
@@ -1257,6 +1284,87 @@ END;
 $BODY$
 LANGUAGE plpgsql VOLATILE;
 
+CREATE OR REPLACE FUNCTION public.archive_security(
+    p_stock_id integer,
+    p_employee_id integer
+)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_proposal_id integer;
+    v_error_msg text;
+    v_stock_ticker varchar;
+BEGIN
+    IF p_stock_id IS NULL OR p_stock_id <= 0 THEN
+        RETURN 'Неверный ID ценной бумаги';
+    END IF;
+
+    SELECT "Наименование"
+    INTO v_stock_ticker
+    FROM public."Список ценных бумаг"
+    WHERE "ID ценной бумаги" = p_stock_id;
+
+    IF v_stock_ticker IS NULL THEN
+        RETURN format('Ценная бумага с ID %s не найдена', p_stock_id);
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM public."Список ценных бумаг"
+        WHERE "ID ценной бумаги" = p_stock_id
+          AND "Статус архивации" = TRUE
+    ) THEN
+        RETURN format(
+            'Ценная бумага "%s" (ID %s) уже архивирована',
+            v_stock_ticker, p_stock_id
+        );
+    END IF;
+
+    -- ⬇️ ВАЖНО: теперь вызываем FUNCTION, а не PROCEDURE
+    FOR v_proposal_id IN
+        SELECT p."ID предложения"
+        FROM public."Предложение" p
+        WHERE p."ID ценной бумаги" = p_stock_id
+          AND p."ID статуса предложения" = 3
+    LOOP
+        v_error_msg := public.process_proposal(
+            p_employee_id,
+            v_proposal_id,
+            FALSE
+        );
+
+        IF v_error_msg IS NOT NULL AND trim(v_error_msg) <> '' THEN
+            RETURN format(
+                'Ошибка при отклонении предложения ID %s для бумаги "%s": %s',
+                v_proposal_id,
+                v_stock_ticker,
+                v_error_msg
+            );
+        END IF;
+    END LOOP;
+
+    DELETE FROM "Баланс депозитарного счёта"
+    WHERE "ID ценной бумаги" = p_stock_id;
+
+    DELETE FROM "История цены"
+    WHERE "ID ценной бумаги" = p_stock_id;
+
+    UPDATE public."Список ценных бумаг"
+    SET "Статус архивации" = TRUE
+    WHERE "ID ценной бумаги" = p_stock_id;
+
+    RETURN NULL;
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN format(
+            'Неожиданная ошибка при архивации: %s',
+            SQLERRM
+        );
+END;
+$$;
+
+
 
 CREATE OR REPLACE FUNCTION public.get_total_account_value(
     p_user_id integer,
@@ -1293,6 +1401,276 @@ BEGIN
     RETURN COALESCE(total, 0);
 END;
 $BODY$;
+
+CREATE OR REPLACE FUNCTION public.process_buy_proposal(
+    p_employee_id integer,
+    p_proposal_id integer,
+    p_verify boolean
+)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_brokerage_account_id INTEGER;
+    v_security_id INTEGER;
+    v_quantity NUMERIC(12,2);
+    v_cost NUMERIC(12,2);
+    v_deposit_account_id INTEGER;
+    v_user_id INTEGER;
+    v_broker_operation_id INTEGER;
+    v_new_broker_operation_id INTEGER;
+    v_new_deposit_operation_id INTEGER;
+
+    c_buy_type_id CONSTANT INTEGER := 1;
+    c_active_status_id CONSTANT INTEGER := 3;
+    c_approved_status_id CONSTANT INTEGER := 2;
+    c_rejected_status_id CONSTANT INTEGER := 1;
+    c_deposit_operation_type_id CONSTANT INTEGER := 1;
+    c_brokerage_operation_return_type_id CONSTANT INTEGER := 4;
+BEGIN
+    SELECT
+        p."ID брокерского счёта",
+        p."ID ценной бумаги",
+        p."Сумма",
+        p."Сумма в валюте",
+        p."ID операции бр. счёта",
+        ba."ID пользователя"
+    INTO
+        v_brokerage_account_id,
+        v_security_id,
+        v_quantity,
+        v_cost,
+        v_broker_operation_id,
+        v_user_id
+    FROM public."Предложение" p
+    JOIN public."Брокерский счёт" ba
+        ON ba."ID брокерского счёта" = p."ID брокерского счёта"
+    WHERE p."ID предложения" = p_proposal_id
+      AND p."ID типа предложения" = c_buy_type_id
+      AND p."ID статуса предложения" = c_active_status_id;
+
+    IF NOT FOUND THEN
+        RETURN format(
+            'Предложение с ID %s не найдено или не является активным предложением на покупку',
+            p_proposal_id
+        );
+    END IF;
+
+    SELECT "ID депозитарного счёта"
+    INTO v_deposit_account_id
+    FROM public."Депозитарный счёт"
+    WHERE "ID пользователя" = v_user_id;
+
+    IF NOT FOUND THEN
+        RETURN format(
+            'У пользователя с ID %s не найден депозитарный счёт',
+            v_user_id
+        );
+    END IF;
+
+    IF p_verify THEN
+        UPDATE public."Баланс депозитарного счёта"
+        SET "Сумма" = "Сумма" + v_quantity
+        WHERE "ID депозитарного счёта" = v_deposit_account_id
+          AND "ID пользователя" = v_user_id
+          AND "ID ценной бумаги" = v_security_id;
+
+        INSERT INTO public."История операций деп. счёта" (
+            "Сумма операции",
+            "Время",
+            "ID депозитарного счёта",
+            "ID пользователя",
+            "ID ценной бумаги",
+            "ID сотрудника",
+            "ID операции бр. счёта",
+            "ID брокерского счёта",
+            "ID типа операции деп. счёта"
+        ) VALUES (
+            v_quantity,
+            CURRENT_TIMESTAMP,
+            v_deposit_account_id,
+            v_user_id,
+            v_security_id,
+            p_employee_id,
+            v_broker_operation_id,
+            v_brokerage_account_id,
+            c_deposit_operation_type_id
+        );
+
+        UPDATE public."Предложение"
+        SET "ID статуса предложения" = c_approved_status_id
+        WHERE "ID предложения" = p_proposal_id;
+    ELSE
+        UPDATE public."Брокерский счёт"
+        SET "Баланс" = "Баланс" + v_cost
+        WHERE "ID брокерского счёта" = v_brokerage_account_id;
+
+        UPDATE public."Предложение"
+        SET "ID статуса предложения" = c_rejected_status_id
+        WHERE "ID предложения" = p_proposal_id;
+    END IF;
+
+    RETURN NULL;
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN SQLERRM;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.process_sell_proposal(
+    p_employee_id integer,
+    p_proposal_id integer,
+    p_verify boolean
+)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_brokerage_account_id INTEGER;
+    v_security_id INTEGER;
+    v_quantity NUMERIC(12,2);
+    v_cost NUMERIC(12,2);
+    v_deposit_account_id INTEGER;
+    v_user_id INTEGER;
+    v_broker_operation_id INTEGER;
+
+    c_sell_type_id CONSTANT INTEGER := 2;
+    c_active_status_id CONSTANT INTEGER := 3;
+    c_approved_status_id CONSTANT INTEGER := 2;
+    c_rejected_status_id CONSTANT INTEGER := 1;
+BEGIN
+    SELECT
+        p."ID брокерского счёта",
+        p."ID ценной бумаги",
+        p."Сумма",
+        p."Сумма в валюте",
+        p."ID операции бр. счёта",
+        ba."ID пользователя"
+    INTO
+        v_brokerage_account_id,
+        v_security_id,
+        v_quantity,
+        v_cost,
+        v_broker_operation_id,
+        v_user_id
+    FROM public."Предложение" p
+    JOIN public."Брокерский счёт" ba
+        ON ba."ID брокерского счёта" = p."ID брокерского счёта"
+    WHERE p."ID предложения" = p_proposal_id
+      AND p."ID типа предложения" = c_sell_type_id
+      AND p."ID статуса предложения" = c_active_status_id;
+
+    IF NOT FOUND THEN
+        RETURN format(
+            'Предложение на продажу с ID %s не найдено или уже обработано',
+            p_proposal_id
+        );
+    END IF;
+
+    SELECT "ID депозитарного счёта"
+    INTO v_deposit_account_id
+    FROM public."Депозитарный счёт"
+    WHERE "ID пользователя" = v_user_id;
+
+    IF NOT FOUND THEN
+        RETURN format(
+            'У пользователя с ID %s не найден депозитарный счёт',
+            v_user_id
+        );
+    END IF;
+
+    IF p_verify THEN
+        UPDATE public."Брокерский счёт"
+        SET "Баланс" = "Баланс" + v_cost
+        WHERE "ID брокерского счёта" = v_brokerage_account_id;
+
+        UPDATE public."Предложение"
+        SET "ID статуса предложения" = c_approved_status_id
+        WHERE "ID предложения" = p_proposal_id;
+    ELSE
+        UPDATE public."Баланс депозитарного счёта"
+        SET "Сумма" = "Сумма" + v_quantity
+        WHERE "ID депозитарного счёта" = v_deposit_account_id
+          AND "ID пользователя" = v_user_id
+          AND "ID ценной бумаги" = v_security_id;
+
+        UPDATE public."Предложение"
+        SET "ID статуса предложения" = c_rejected_status_id
+        WHERE "ID предложения" = p_proposal_id;
+    END IF;
+
+    RETURN NULL;
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN SQLERRM;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.process_proposal(
+    p_employee_id integer,
+    p_proposal_id integer,
+    p_verify boolean
+)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_current_status_id INTEGER;
+    v_proposal_type_id INTEGER;
+    v_error_msg text;
+BEGIN
+    PERFORM 1
+    FROM public."Персонал"
+    WHERE "ID сотрудника" = p_employee_id;
+
+    IF NOT FOUND THEN
+        RETURN format('Сотрудник с ID %s не найден', p_employee_id);
+    END IF;
+
+    SELECT "ID типа предложения", "ID статуса предложения"
+    INTO v_proposal_type_id, v_current_status_id
+    FROM public."Предложение"
+    WHERE "ID предложения" = p_proposal_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN format('Предложение с ID %s не найдено', p_proposal_id);
+    END IF;
+
+    IF v_current_status_id != 3 THEN
+        RETURN format(
+            'Предложение с ID %s имеет недопустимый статус (%s)',
+            p_proposal_id,
+            v_current_status_id
+        );
+    END IF;
+
+    IF v_proposal_type_id = 1 THEN
+        v_error_msg := public.process_buy_proposal(
+            p_employee_id,
+            p_proposal_id,
+            p_verify
+        );
+    ELSIF v_proposal_type_id = 2 THEN
+        v_error_msg := public.process_sell_proposal(
+            p_employee_id,
+            p_proposal_id,
+            p_verify
+        );
+    ELSE
+        RETURN format(
+            'Неизвестный тип предложения ID %s',
+            v_proposal_type_id
+        );
+    END IF;
+
+    RETURN v_error_msg;
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN SQLERRM;
+END;
+$$;
+
 
 
 CREATE OR REPLACE FUNCTION get_stock_growth(
@@ -1769,7 +2147,7 @@ END;
 $BODY$;
 
 CREATE OR REPLACE PROCEDURE public.archive_currency(
-    IN currency_id integer,
+    IN p_currency_id integer,
     OUT p_error_message character varying)
 LANGUAGE 'plpgsql'
 AS $BODY$
@@ -1780,6 +2158,7 @@ DECLARE
     v_used_in_securities BOOLEAN;
     v_accounts_count INTEGER;
     v_securities_count INTEGER;
+    v_deleted_rates_count INTEGER := 0;
 BEGIN
     -- Инициализируем выходной параметр
     p_error_message := NULL;
@@ -1788,24 +2167,23 @@ BEGIN
     SELECT EXISTS(
         SELECT 1
         FROM public."Список валют"
-        WHERE "ID валюты" = currency_id
+        WHERE "ID валюты" = p_currency_id
     ) INTO v_currency_exists;
 
     -- Проверка 1: Существование валюты
     IF NOT v_currency_exists THEN
-        p_error_message := format('Валюта с ID %s не существует', currency_id);
+        p_error_message := format('Валюта с ID %s не существует', p_currency_id);
         RETURN;
     END IF;
 
-    -- Проверяем, не архивирована ли валюта уже
     SELECT "Статус архивации"
     INTO v_is_already_archived
     FROM public."Список валют"
-    WHERE "ID валюты" = currency_id;
+    WHERE "ID валюты" = p_currency_id;
 
     -- Проверка 2: Проверка статуса архивации
     IF v_is_already_archived THEN
-        p_error_message := format('Валюта с ID %s уже находится в архиве', currency_id);
+        p_error_message := format('Валюта с ID %s уже находится в архиве', p_currency_id);
         RETURN;
     END IF;
 
@@ -1813,7 +2191,7 @@ BEGIN
     SELECT EXISTS(
         SELECT 1
         FROM public."Брокерский счёт"
-        WHERE "ID валюты" = currency_id
+        WHERE "ID валюты" = p_currency_id
     ) INTO v_used_in_accounts;
 
     IF v_used_in_accounts THEN
@@ -1821,11 +2199,11 @@ BEGIN
         SELECT COUNT(*)
         INTO v_accounts_count
         FROM public."Брокерский счёт"
-        WHERE "ID валюты" = currency_id;
+        WHERE "ID валюты" = p_currency_id;
 
         p_error_message := format(
             'Валюта с ID %s используется в %s брокерском(их) счете(ах). Архивация невозможна.',
-            currency_id, v_accounts_count
+            p_currency_id, v_accounts_count
         );
         RETURN;
     END IF;
@@ -1834,32 +2212,37 @@ BEGIN
     SELECT EXISTS(
         SELECT 1
         FROM public."Список ценных бумаг"
-        WHERE "ID валюты" = currency_id
+        WHERE "ID валюты" = p_currency_id AND "Статус архивации" = FALSE
     ) INTO v_used_in_securities;
 
     IF v_used_in_securities THEN
-        -- Получаем количество для информационного сообщения
         SELECT COUNT(*)
         INTO v_securities_count
         FROM public."Список ценных бумаг"
-        WHERE "ID валюты" = currency_id;
+        WHERE "ID валюты" = p_currency_id AND "Статус архивации" = FALSE;
 
         p_error_message := format(
-            'Валюта с ID %s используется в %s ценной(ых) бумаге(ах). Архивация невозможна.',
-            currency_id, v_securities_count
+            'Валюта с ID %s используется в %s неархивных ценной(ых) бумаге(ах). Архивация невозможна.',
+            p_currency_id, v_securities_count
         );
         RETURN;
     END IF;
 
     BEGIN
+        -- Удаляем записи из таблицы currency_rate перед архивацией
+        DELETE FROM public."currency_rate"
+        WHERE "currency_rate"."currency_id" = p_currency_id; -- Уточняем таблицу
+
+        GET DIAGNOSTICS v_deleted_rates_count = ROW_COUNT;
+
         -- Обновляем статус архивации валюты
         UPDATE public."Список валют"
         SET "Статус архивации" = TRUE
-        WHERE "ID валюты" = currency_id;
+        WHERE "ID валюты" = p_currency_id;
 
         -- Проверяем, что обновление прошло успешно
         IF NOT FOUND THEN
-            p_error_message := format('Не удалось обновить статус архивации для валюты с ID %s', currency_id);
+            p_error_message := format('Не удалось обновить статус архивации для валюты с ID %s', p_currency_id);
             RETURN;
         END IF;
 
@@ -1871,8 +2254,8 @@ BEGIN
     END;
 
     -- Если все успешно, p_error_message остается NULL
-    -- Можно добавить логирование успешной операции, если необходимо
-    RAISE NOTICE 'Валюта с ID %s успешно архивирована', currency_id;
+    RAISE NOTICE 'Валюта с ID %s успешно архивирована. Удалено %s записей из currency_rate',
+                 p_currency_id, v_deleted_rates_count;
 
 END;
 $BODY$;
@@ -1910,338 +2293,6 @@ BEGIN
         WHEN OTHERS THEN
             p_error_message := SQLERRM;
             p_currency_id := NULL;
-    END;
-END;
-$BODY$;
-
-CREATE OR REPLACE PROCEDURE public.process_buy_proposal(
-    p_employee_id integer,
-    p_proposal_id integer,
-    p_verify boolean,
-    OUT p_error_message character varying
-)
-LANGUAGE 'plpgsql'
-AS $BODY$
-DECLARE
-    v_brokerage_account_id INTEGER;
-    v_security_id INTEGER;
-    v_quantity NUMERIC(12,2);
-    v_cost NUMERIC(12,2);
-    v_deposit_account_id INTEGER;
-    v_user_id INTEGER;
-    v_broker_operation_id INTEGER;
-    v_new_broker_operation_id INTEGER;
-    v_new_deposit_operation_id INTEGER;
-    c_buy_type_id CONSTANT INTEGER := 1;
-    c_active_status_id CONSTANT INTEGER := 3;
-    c_approved_status_id CONSTANT INTEGER := 2;
-    c_rejected_status_id CONSTANT INTEGER := 1;
-    c_deposit_operation_type_id CONSTANT INTEGER := 1;
-    c_brokerage_operation_return_type_id CONSTANT INTEGER := 4;
-BEGIN
-    p_error_message := NULL;
-
-    BEGIN
-        SELECT
-            p."ID брокерского счёта",
-            p."ID ценной бумаги",
-            p."Сумма" AS quantity,
-            p."Сумма в валюте" AS cost,
-            p."ID операции бр. счёта" AS broker_operation_id,
-            ba."ID пользователя"
-        INTO
-            v_brokerage_account_id,
-            v_security_id,
-            v_quantity,
-            v_cost,
-            v_broker_operation_id,
-            v_user_id
-        FROM public."Предложение" p
-        JOIN public."Брокерский счёт" ba ON ba."ID брокерского счёта" = p."ID брокерского счёта"
-        WHERE p."ID предложения" = p_proposal_id
-          AND p."ID типа предложения" = c_buy_type_id
-          AND p."ID статуса предложения" = c_active_status_id;
-
-        IF NOT FOUND THEN
-            p_error_message := format('Предложение с ID %s не найдено или уже обработано/не является активным предложением на покупку', p_proposal_id);
-            RETURN;
-        END IF;
-
-        SELECT "ID депозитарного счёта"
-        INTO v_deposit_account_id
-        FROM public."Депозитарный счёт"
-        WHERE "ID пользователя" = v_user_id;
-
-        IF NOT FOUND THEN
-            p_error_message := format('У пользователя с ID %s не найден депозитарный счёт', v_user_id);
-            RETURN;
-        END IF;
-
-        IF p_verify THEN
-            PERFORM 1
-            FROM public."Баланс депозитарного счёта"
-            WHERE "ID депозитарного счёта" = v_deposit_account_id
-              AND "ID пользователя" = v_user_id
-              AND "ID ценной бумаги" = v_security_id;
-
-            IF NOT FOUND THEN
-                p_error_message := format('В балансе депозитарного счёта отсутствует запись для ценной бумаги ID %s у пользователя ID %s', v_security_id, v_user_id);
-                RETURN;
-            END IF;
-
-            UPDATE public."Баланс депозитарного счёта"
-            SET "Сумма" = "Сумма" + v_quantity
-            WHERE "ID депозитарного счёта" = v_deposit_account_id
-              AND "ID пользователя" = v_user_id
-              AND "ID ценной бумаги" = v_security_id;
-
-            INSERT INTO public."История операций деп. счёта" (
-                "Сумма операции",
-                "Время",
-                "ID депозитарного счёта",
-                "ID пользователя",
-                "ID ценной бумаги",
-                "ID сотрудника",
-                "ID операции бр. счёта",
-                "ID брокерского счёта",
-                "ID типа операции деп. счёта"
-            ) VALUES (
-                v_quantity,
-                CURRENT_TIMESTAMP,
-                v_deposit_account_id,
-                v_user_id,
-                v_security_id,
-                p_employee_id,
-                v_broker_operation_id,
-                v_brokerage_account_id,
-                c_deposit_operation_type_id
-            )
-            RETURNING "ID операции деп. счёта" INTO v_new_deposit_operation_id;
-
-            UPDATE public."Предложение"
-            SET "ID статуса предложения" = c_approved_status_id
-            WHERE "ID предложения" = p_proposal_id;
-        ELSE
-                CALL change_brokerage_account_balance(
-                p_account_id := v_brokerage_account_id,
-                p_amount := v_cost,
-                p_brokerage_operation_type := c_brokerage_operation_return_type_id,
-                p_staff_id := p_employee_id,
-                p_operation_id := v_new_broker_operation_id,
-                p_error_message := p_error_message
-            );
-
-            IF p_error_message IS NOT NULL THEN
-                RETURN;
-            END IF;
-
-            UPDATE public."Предложение"
-            SET "ID статуса предложения" = c_rejected_status_id
-            WHERE "ID предложения" = p_proposal_id;
-        END IF;
-
-    EXCEPTION
-        WHEN OTHERS THEN
-            p_error_message := SQLERRM;
-    END;
-END;
-$BODY$;
-
-CREATE OR REPLACE PROCEDURE public.process_sell_proposal(
-    p_employee_id integer,
-    p_proposal_id integer,
-    p_verify boolean,
-    OUT p_error_message character varying
-)
-LANGUAGE 'plpgsql'
-AS $BODY$
-DECLARE
-    v_proposal RECORD;
-    v_brokerage_account_id INTEGER;
-    v_security_id INTEGER;
-    v_quantity NUMERIC(12,2);
-    v_cost NUMERIC(12,2);
-    v_deposit_account_id INTEGER;
-    v_user_id INTEGER;
-    v_broker_operation_id INTEGER;
-    v_depo_operation_id INTEGER;
-    c_sell_type_id CONSTANT INTEGER := 2;
-    c_active_status_id CONSTANT INTEGER := 3;
-    c_approved_status_id CONSTANT INTEGER := 2;
-    c_rejected_status_id CONSTANT INTEGER := 1;
-    c_depo_sell CONSTANT INTEGER := 2;
-    c_depo_unfreeze CONSTANT INTEGER := 4;
-    c_brokerage_operation_sell_id CONSTANT INTEGER := 5;
-BEGIN
-    p_error_message := NULL;
-
-    BEGIN
-        SELECT
-            p."ID предложения",
-            p."ID брокерского счёта",
-            p."ID ценной бумаги",
-            p."Сумма" AS quantity,
-            p."Сумма в валюте" AS cost,
-            p."ID операции бр. счёта" AS broker_operation_id,
-            ba."ID пользователя"
-        INTO v_proposal
-        FROM public."Предложение" p
-        JOIN public."Брокерский счёт" ba ON ba."ID брокерского счёта" = p."ID брокерского счёта"
-        WHERE p."ID предложения" = p_proposal_id
-          AND p."ID типа предложения" = c_sell_type_id
-          AND p."ID статуса предложения" = c_active_status_id;
-
-        IF NOT FOUND THEN
-            p_error_message := format('Предложение на продажу с ID %s не найдено или уже обработано', p_proposal_id);
-            RETURN;
-        END IF;
-
-        v_brokerage_account_id := v_proposal."ID брокерского счёта";
-        v_security_id := v_proposal."ID ценной бумаги";
-        v_quantity := v_proposal.quantity;
-        v_cost := v_proposal.cost;
-        v_broker_operation_id := v_proposal.broker_operation_id;
-        v_user_id := v_proposal."ID пользователя";
-
-        SELECT "ID депозитарного счёта"
-        INTO v_deposit_account_id
-        FROM public."Депозитарный счёт"
-        WHERE "ID пользователя" = v_user_id;
-
-        IF NOT FOUND THEN
-            p_error_message := format('У пользователя с ID %s не найден депозитарный счёт', v_user_id);
-            RETURN;
-        END IF;
-
-        IF p_verify THEN
-            UPDATE public."История операций бр. счёта"
-            SET "Сумма операции" = v_cost,
-                "ID типа операции бр. счёта" = c_brokerage_operation_sell_id,
-                "Время" = CURRENT_TIMESTAMP
-            WHERE "ID операции бр. счёта" = v_broker_operation_id;
-
-            UPDATE public."История операций деп. счёта"
-            SET "ID типа операции деп. счёта" = c_depo_sell
-            WHERE "ID операции бр. счёта" = v_broker_operation_id;
-
-            UPDATE public."Брокерский счёт"
-            SET "Баланс" = "Баланс" + v_cost
-            WHERE "ID брокерского счёта" = v_brokerage_account_id;
-
-            UPDATE public."Предложение"
-            SET "ID статуса предложения" = c_approved_status_id
-            WHERE "ID предложения" = p_proposal_id;
-        ELSE
-            PERFORM 1
-            FROM public."Баланс депозитарного счёта"
-            WHERE "ID депозитарного счёта" = v_deposit_account_id
-              AND "ID пользователя" = v_user_id
-              AND "ID ценной бумаги" = v_security_id;
-
-            IF NOT FOUND THEN
-                p_error_message := format('В балансе депозитарного счёта отсутствует запись для ценной бумаги ID %s', v_security_id);
-                RETURN;
-            END IF;
-
-            UPDATE public."Баланс депозитарного счёта"
-            SET "Сумма" = "Сумма" + v_quantity
-            WHERE "ID депозитарного счёта" = v_deposit_account_id
-              AND "ID пользователя" = v_user_id
-              AND "ID ценной бумаги" = v_security_id;
-
-            INSERT INTO public."История операций деп. счёта" (
-                "Сумма операции",
-                "Время",
-                "ID депозитарного счёта",
-                "ID пользователя",
-                "ID ценной бумаги",
-                "ID сотрудника",
-                "ID операции бр. счёта",
-                "ID брокерского счёта",
-                "ID типа операции деп. счёта"
-            ) VALUES (
-                v_quantity,
-                CURRENT_TIMESTAMP,
-                v_deposit_account_id,
-                v_user_id,
-                v_security_id,
-                p_employee_id,
-                v_broker_operation_id,
-                v_brokerage_account_id,
-                c_depo_unfreeze
-            );
-
-            UPDATE public."Предложение"
-            SET "ID статуса предложения" = c_rejected_status_id
-            WHERE "ID предложения" = p_proposal_id;
-        END IF;
-
-    EXCEPTION
-        WHEN OTHERS THEN
-            p_error_message := SQLERRM;
-    END;
-END;
-$BODY$;
-
-CREATE OR REPLACE PROCEDURE public.process_proposal(
-    p_employee_id integer,
-    p_proposal_id integer,
-    p_verify boolean,
-    OUT p_error_message character varying
-)
-LANGUAGE 'plpgsql'
-AS $BODY$
-DECLARE
-    v_current_status_id INTEGER;
-    v_proposal_type_id INTEGER;
-BEGIN
-    p_error_message := NULL;
-
-    BEGIN
-        PERFORM 1
-        FROM public."Персонал"
-        WHERE "ID сотрудника" = p_employee_id;
-
-        IF NOT FOUND THEN
-            p_error_message := format('Сотрудник с ID %s не найден', p_employee_id);
-            RETURN;
-        END IF;
-
-        SELECT "ID типа предложения", "ID статуса предложения"
-        INTO v_proposal_type_id, v_current_status_id
-        FROM public."Предложение"
-        WHERE "ID предложения" = p_proposal_id
-        FOR UPDATE;
-
-        IF NOT FOUND THEN
-            p_error_message := format('Предложение с ID %s не найдено', p_proposal_id);
-            RETURN;
-        END IF;
-
-        IF v_current_status_id != 3 THEN
-            p_error_message := format('Предложение с ID %s уже обработано или имеет недопустимый статус (текущий статус ID: %s)',
-                p_proposal_id, v_current_status_id);
-            RETURN;
-        END IF;
-
-        IF v_proposal_type_id = 1 THEN
-            CALL process_buy_proposal(p_employee_id, p_proposal_id, p_verify, p_error_message);
-        ELSIF v_proposal_type_id = 2 THEN
-            CALL process_sell_proposal(p_employee_id, p_proposal_id, p_verify, p_error_message);
-        ELSE
-            p_error_message := format('Неизвестный тип предложения ID %s для предложения ID %s',
-                v_proposal_type_id, p_proposal_id);
-            RETURN;
-        END IF;
-
-        -- Если дочерняя процедура вернула ошибку — она уже в p_error_message
-        IF p_error_message IS NOT NULL THEN
-            RETURN;
-        END IF;
-
-    EXCEPTION
-        WHEN OTHERS THEN
-            p_error_message := SQLERRM;
     END;
 END;
 $BODY$;
@@ -2917,6 +2968,11 @@ CREATE OR REPLACE PROCEDURE public.add_proposal(
 )
 LANGUAGE 'plpgsql'
 AS $BODY$
+DECLARE
+    v_security_archived BOOLEAN;
+    v_security_ticker VARCHAR;
+    v_security_currency_id INTEGER;
+    v_account_currency_id INTEGER;
 BEGIN
     p_error_message := NULL;
 
@@ -2940,21 +2996,39 @@ BEGIN
           AND "ID пользователя" = p_user_id;
 
         IF NOT FOUND THEN
-            p_error_message := format('Брокерский счёт с ID %s не найден или не принадлежит пользователю ID %s', p_brokerage_account_id, p_user_id);
+            p_error_message := format('Брокерский счёт с ID %s не найден или не принадлежит пользователю ID %s',
+                                    p_brokerage_account_id, p_user_id);
             RETURN;
         END IF;
 
-        -- Проверка существования ценной бумаги и соответствия валюты счёта и бумаги
-        PERFORM 1
+        -- Проверка существования ценной бумаги и её статус архивации
+        SELECT s."Статус архивации", s."Наименование", s."ID валюты",
+               ba."ID валюты"
+        INTO v_security_archived, v_security_ticker, v_security_currency_id,
+             v_account_currency_id
         FROM public."Список ценных бумаг" s
-        JOIN public."Брокерский счёт" ba ON ba."ID валюты" = s."ID валюты"
+        CROSS JOIN public."Брокерский счёт" ba
         WHERE s."ID ценной бумаги" = p_security_id
           AND ba."ID брокерского счёта" = p_brokerage_account_id;
 
-        IF NOT FOUND THEN
+        -- Если бумага не найдена
+        IF v_security_ticker IS NULL THEN
+            p_error_message := format('Ценная бумага с ID %s не найдена', p_security_id);
+            RETURN;
+        END IF;
+
+        -- Проверка на архивность ценной бумаги
+        IF v_security_archived THEN
+            p_error_message := format('Ценная бумага "%s" (ID %s) архивирована и недоступна для торговли',
+                                    v_security_ticker, p_security_id);
+            RETURN;
+        END IF;
+
+        -- Проверка соответствия валюты счёта и бумаги
+        IF v_security_currency_id != v_account_currency_id THEN
             p_error_message := format(
-                'Валюта ценной бумаги ID %s не соответствует валюте брокерского счёта ID %s',
-                p_security_id, p_brokerage_account_id
+                'Валюта ценной бумаги "%s" (ID %s) не соответствует валюте брокерского счёта ID %s',
+                v_security_ticker, p_security_id, p_brokerage_account_id
             );
             RETURN;
         END IF;
@@ -3108,27 +3182,6 @@ BEGIN
 END;
 $BODY$;
 
-CREATE OR REPLACE PROCEDURE public.archive_security(
-    IN p_stock_id integer,
-    OUT p_error_message character varying
-)
-LANGUAGE 'plpgsql'
-AS $BODY$
-BEGIN
-    p_error_message := NULL;
-
-    PERFORM 1 FROM public."Список ценных бумаг" WHERE "ID ценной бумаги" = p_stock_id;
-    IF NOT FOUND THEN
-        p_error_message := 'Ценная бумага не найдена';
-        RETURN;
-    END IF;
-
-    UPDATE public."Список ценных бумаг"
-    SET "Статус архивации" = TRUE
-    WHERE "ID ценной бумаги" = p_stock_id;
-END;
-$BODY$;
-
 call add_currency('usd', '$', 100, null, null);
 call add_currency('eur', '€', 200, null, null);
 
@@ -3159,11 +3212,11 @@ call submit_passport(2, 'Иванов', 'Иван', 'Иванович', '0113', 
 call register_user('3', '$2b$12$SLJKJ4d31q3acOktI7eH7eOynavGTmWUTcU2At/mCYdEPu8KLrayO', 'email3@example.com', null, null);
 
 call add_brokerage_account(1, 1, 1, '500100732259', null, null);
+call add_brokerage_account(1, 1, 3, '600133890863', null, null);
 call change_brokerage_account_balance(1, 1000000, 1, 2, null, null);
 
 
 call add_proposal(1, 1, 1, 1, 1, null);
-call process_proposal(1, 1, true, null);
+select process_proposal(1, 1, true);
 
 call add_proposal(1, 1, 1, 1, 2, null);
-call process_proposal(1, 2, false, null);

@@ -504,7 +504,7 @@ async def get_proposal_detail(
 @app.get("/api/securities")
 async def get_securities(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Security).order_by(Security.name)
+        select(Security).where(Security.is_archived == False).order_by(Security.name)
     )
     securities = result.scalars().all()
 
@@ -1145,7 +1145,10 @@ async def update_stock(
         error_message = row[0]
 
         if error_message is not None:
-            raise HTTPException(status_code=400, detail=error_message)
+            raise HTTPException(
+                status_code=400,
+                detail=error_message
+            )
 
         await db.commit()
 
@@ -1166,24 +1169,44 @@ async def archive_stock(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    if current_user.get("type") != "staff":
+    # Проверяем права (используем role из токена)
+    if current_user.get("role") != MEGAADMIN_EMPLOYEE_ROLE:
         raise HTTPException(status_code=403, detail="Доступ запрещён")
+
     try:
+        # Вызываем функцию архивации
         result = await db.execute(
-            text("CALL archive_security(:stock_id, :error_message)"),
-            {"stock_id": stock_id, "error_message": None}
+            text("SELECT archive_security(:stock_id, :employee_id)"),
+            {
+                "stock_id": stock_id,
+                "employee_id": current_user["id"]
+            }
         )
-        row = result.fetchone()
-        error_message = row[0]
-        if error_message is not None:
-            raise HTTPException(status_code=400, detail=error_message)
+
+        # Получаем результат (ошибку или NULL)
+        error_message = result.scalar()
+
+        # Если есть ошибка - возвращаем её
+        if error_message is not None and error_message != "":
+            raise HTTPException(
+                status_code=400,
+                detail=error_message  # Возвращаем точное сообщение из БД
+            )
+
+        # Подтверждаем транзакцию
         await db.commit()
-        return {"message": "Ценная бумага архивирована"}
+        return {"message": "Ценная бумага успешно архивирована"}
+
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка сервера при архивации ценной бумаги: {e}")
+        logger.error(f"Ошибка архивации stock_id={stock_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка сервера при архивации: {str(e)}"
+        )
+
 
 @app.post("/api/exchange/stocks", status_code=status.HTTP_201_CREATED)
 async def create_stock(
@@ -1191,12 +1214,11 @@ async def create_stock(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    if current_user.get("type") != "staff":
+    if current_user.get("role") != MEGAADMIN_EMPLOYEE_ROLE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Доступ запрещён: требуется роль сотрудника"
+            detail="Доступ запрещён"
         )
-
     try:
         result = await db.execute(
             text("""
@@ -1552,8 +1574,28 @@ async def call_verify_user_passport(
         "user_id": user_id,
         "passport_id": passport_id
     }
-    
-@app.get("/api/exchange/stocks")
+
+class StockInfoOut(BaseModel):
+    id: int
+    ticker: str
+    isin: str
+    lot_size: Decimal
+    price: Decimal
+    currency: str
+    change: Decimal
+    is_archived: bool
+
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            Decimal: lambda v: float(v) if v is not None else None
+        }
+
+
+@app.get(
+    "/api/exchange/stocks",
+    response_model=List[StockInfoOut]
+)
 async def get_stocks(
         db: AsyncSession = Depends(get_db),
         current_user: dict = Depends(get_current_user),
@@ -1687,12 +1729,7 @@ async def add_currency(
     code = body.get("code")
     symbol = body.get("symbol")
     rate_to_ruble = body.get("rate_to_ruble")
-
-    if not code or not symbol or not rate_to_ruble:
-        raise HTTPException(status_code=400, detail="Код, символ валюты и курс к рублю обязательны")
-
     code = code.upper().strip()
-
     try:
         result = await db.execute(
             text("""
