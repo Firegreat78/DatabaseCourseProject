@@ -1092,6 +1092,99 @@ class StockCreate(BaseModel):
         return v
 
 
+class StockUpdateRequest(BaseModel):
+    ticker: Optional[str] = None
+    isin: Optional[str] = None
+    lot_size: Optional[int] = None
+    price: Optional[float] = None
+
+
+@app.put("/api/exchange/stocks/{stock_id}")
+async def update_stock(
+    stock_id: int,
+    stock_data: StockUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user.get("type") != "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён: требуется роль сотрудника"
+        )
+
+    # Если ничего не передано — ошибка
+    if all(v is None for v in stock_data.model_dump().values()):
+        raise HTTPException(status_code=400, detail="Нет данных для обновления")
+
+    try:
+        result = await db.execute(
+            text("""
+                CALL update_security(
+                    :stock_id,
+                    :ticker,
+                    :isin,
+                    :lot_size,
+                    :price,
+                    :error_message
+                )
+            """),
+            {
+                "stock_id": stock_id,
+                "ticker": stock_data.ticker,
+                "isin": stock_data.isin,
+                "lot_size": stock_data.lot_size,
+                "price": stock_data.price,
+                "error_message": None
+            }
+        )
+
+        row = result.fetchone()
+        if row is None:
+            raise Exception("Процедура не вернула результат")
+
+        error_message = row[0]
+
+        if error_message is not None:
+            raise HTTPException(status_code=400, detail=error_message)
+
+        await db.commit()
+
+        return {"message": "Ценная бумага успешно обновлена"}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера при обновлении ценной бумаги: {exc}"
+        )
+
+@app.post("/api/exchange/stocks/{stock_id}/archive")
+async def archive_stock(
+    stock_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user.get("type") != "staff":
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+    try:
+        result = await db.execute(
+            text("CALL archive_security(:stock_id, :error_message)"),
+            {"stock_id": stock_id, "error_message": None}
+        )
+        row = result.fetchone()
+        error_message = row[0]
+        if error_message is not None:
+            raise HTTPException(status_code=400, detail=error_message)
+        await db.commit()
+        return {"message": "Ценная бумага архивирована"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера при архивации ценной бумаги: {e}")
+
 @app.post("/api/exchange/stocks", status_code=status.HTTP_201_CREATED)
 async def create_stock(
     data: StockCreate,
@@ -1162,7 +1255,7 @@ async def create_stock(
     except Exception as exc:
         await db.rollback()
         logger.exception("Неожиданная ошибка при создании ценной бумаги")
-        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {exc}")
 
 class ProcessProposalRequest(BaseModel):
     verify: bool
@@ -1461,79 +1554,23 @@ async def call_verify_user_passport(
     }
     
 @app.get("/api/exchange/stocks")
-async def get_stocks(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(text("SELECT * FROM get_exchange_stocks()"))
+async def get_stocks(
+        db: AsyncSession = Depends(get_db),
+        current_user: dict = Depends(get_current_user),
+):
+    user_type = current_user.get("type")
+    if user_type == "staff":
+        query = text("SELECT * FROM get_exchange_stocks()")
+    elif user_type == "client":
+        query = text("SELECT * FROM get_exchange_stocks() WHERE NOT is_archived")
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ запрещён"
+        )
+    result = await db.execute(query)
     rows = result.fetchall()
     return [dict(row._mapping) for row in rows]
-
-class DictionaryItemCreate(BaseModel):
-    """Общая модель для создания элемента справочника"""
-    pass
-
-class EmploymentStatusCreate(DictionaryItemCreate):
-    status: str
-
-class VerificationStatusCreate(DictionaryItemCreate):
-    status: str
-
-class UserRestrictionStatusCreate(DictionaryItemCreate):
-    status: str
-
-class ProposalStatusCreate(DictionaryItemCreate):
-    status: str
-
-class ProposalTypeCreate(DictionaryItemCreate):
-    type: str
-
-class DepositoryAccountOperationTypeCreate(DictionaryItemCreate):
-    type: str
-
-class BrokerageAccountOperationTypeCreate(DictionaryItemCreate):
-    type_name: str
-
-class CurrencyCreate(DictionaryItemCreate):
-    code: str
-    symbol: str
-
-class BankCreate(DictionaryItemCreate):
-    name: str
-    inn: str
-    ogrn: str
-    bik: str
-    license_expiry: date
-
-# Модели для обновления
-class EmploymentStatusUpdate(BaseModel):
-    status: Optional[str] = None
-
-class VerificationStatusUpdate(BaseModel):
-    status: Optional[str] = None
-
-class UserRestrictionStatusUpdate(BaseModel):
-    status: Optional[str] = None
-
-class ProposalStatusUpdate(BaseModel):
-    status: Optional[str] = None
-
-class ProposalTypeUpdate(BaseModel):
-    type: Optional[str] = None
-
-class DepositoryAccountOperationTypeUpdate(BaseModel):
-    type: Optional[str] = None
-
-class BrokerageAccountOperationTypeUpdate(BaseModel):
-    type_name: Optional[str] = None
-
-class CurrencyUpdate(BaseModel):
-    code: Optional[str] = None
-    symbol: Optional[str] = None
-
-class BankUpdate(BaseModel):
-    name: Optional[str] = None
-    inn: Optional[str] = None
-    ogrn: Optional[str] = None
-    bik: Optional[str] = None
-    license_expiry: Optional[date] = None
 
 
 class TotalSumFromLotSizeResponse(BaseModel):

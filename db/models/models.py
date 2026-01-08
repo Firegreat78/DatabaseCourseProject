@@ -94,6 +94,7 @@ class Security(Base):
     lot_size = Column("Размер лота", Numeric(12, 2), nullable=False)
     isin = Column("ISIN", String(40), nullable=False)
     currency_id = Column("ID валюты", Integer, ForeignKey("Список валют.ID валюты", ondelete="RESTRICT", onupdate="RESTRICT"), nullable=False)
+    is_archived = Column("Статус архивации", Boolean, nullable=False)
 
     currency = relationship("Currency", backref="securities")
 

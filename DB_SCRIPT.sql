@@ -265,7 +265,8 @@ CREATE TABLE "Список ценных бумаг"
   "Наименование" Character varying(120) NOT NULL UNIQUE,
   "Размер лота" Numeric(12,2) NOT NULL,
   "ISIN" Character varying(40) NOT NULL UNIQUE,
-  "ID валюты" Integer NOT NULL
+  "ID валюты" Integer NOT NULL,
+  "Статус архивации" BOOLEAN NOT NULL DEFAULT FALSE
 )
 WITH (autovacuum_enabled=true);
 CREATE INDEX "IX_Relationship51" ON "Список ценных бумаг" ("ID валюты");
@@ -280,20 +281,19 @@ BEGIN
         RAISE EXCEPTION 'Размер лота должен быть строго больше нуля (получено: %)', NEW."Размер лота";
     END IF;
 
-    -- Проверка: валюта существует
     PERFORM 1 FROM public."Список валют" WHERE "ID валюты" = NEW."ID валюты";
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Валюта с ID %s не найдена', NEW."ID валюты";
     END IF;
 
-    -- Проверка уникальности ISIN
-    PERFORM 1 FROM public."Список ценных бумаг" WHERE "ISIN" = NEW."ISIN" AND "ID ценной бумаги" IS DISTINCT FROM NEW."ID ценной бумаги";
+    PERFORM 1 FROM public."Список ценных бумаг"
+    WHERE "Статус архивации" = FALSE AND "ISIN" = NEW."ISIN" AND "ID ценной бумаги" IS DISTINCT FROM NEW."ID ценной бумаги";
     IF FOUND THEN
-        RAISE EXCEPTION 'Ценная бумага с ISIN %s уже существует', NEW."ISIN";
+        RAISE EXCEPTION 'Неархивированная ценная бумага с ISIN %s уже существует', NEW."ISIN";
     END IF;
 
-    -- Проверка уникальности тикера (Наименование)
-    PERFORM 1 FROM public."Список ценных бумаг" WHERE "Наименование" = NEW."Наименование" AND "ID ценной бумаги" IS DISTINCT FROM NEW."ID ценной бумаги";
+    PERFORM 1 FROM public."Список ценных бумаг"
+    WHERE "Статус архивации" = FALSE AND "Наименование" = NEW."Наименование" AND "ID ценной бумаги" IS DISTINCT FROM NEW."ID ценной бумаги";
     IF FOUND THEN
         RAISE EXCEPTION 'Ценная бумага с тикером %s уже существует', NEW."Наименование";
     END IF;
@@ -993,7 +993,8 @@ RETURNS TABLE (
     lot_size        NUMERIC(12,2),
     price           NUMERIC(12,2),
     currency        VARCHAR(10),
-    change          NUMERIC(6,2)
+    change          NUMERIC(6,2),
+    is_archived     BOOLEAN
 )
 LANGUAGE sql
 STABLE
@@ -1017,7 +1018,8 @@ prices AS (
 		s."Размер лота" AS lot_size,
         lp."Цена" AS last_price,
         prev."Цена" AS prev_price,
-        c."Символ" AS currency
+        c."Символ" AS currency,
+		s."Статус архивации" AS is_archived
     FROM "Список ценных бумаг" s
     JOIN last_prices lp
         ON lp."ID ценной бумаги" = s."ID ценной бумаги"
@@ -1041,9 +1043,10 @@ SELECT
             ((last_price - prev_price) / prev_price) * 100,
             2
         )
-    END AS change
+    END AS change,
+	is_archived
 FROM prices
-ORDER BY ticker;
+ORDER BY isin;
 $$;
 
 
@@ -3055,6 +3058,74 @@ BEGIN
         WHEN OTHERS THEN
             p_error_message := SQLERRM;
     END;
+END;
+$BODY$;
+
+CREATE OR REPLACE PROCEDURE public.update_security(
+    IN p_stock_id integer,
+    IN p_ticker character varying,
+    IN p_isin character varying,
+    IN p_lot_size integer,
+    IN p_price numeric,
+    OUT p_error_message character varying
+)
+LANGUAGE 'plpgsql'
+AS $BODY$
+BEGIN
+    p_error_message := NULL;
+    BEGIN
+        PERFORM 1 FROM public."Список ценных бумаг" WHERE "ID ценной бумаги" = p_stock_id;
+        IF NOT FOUND THEN
+            p_error_message := format('Ценная бумага с ID %s не найдена', p_stock_id);
+            RETURN;
+        END IF;
+
+        UPDATE public."Список ценных бумаг"
+        SET
+            "Наименование" = COALESCE(p_ticker, "Наименование"),
+            "ISIN" = COALESCE(p_isin, "ISIN"),
+            "Размер лота" = COALESCE(p_lot_size, "Размер лота")
+        WHERE "ID ценной бумаги" = p_stock_id;
+
+        -- Если нужно обновить текущую цену — вызываем процедуру change_stock_price
+        IF p_price IS NOT NULL THEN
+            CALL public.change_stock_price(
+                p_stock_id := p_stock_id,
+                p_new_price := p_price,
+                p_error_message := p_error_message
+            );
+
+            -- Если при изменении цены произошла ошибка
+            IF p_error_message IS NOT NULL THEN
+                RETURN;
+            END IF;
+        END IF;
+
+    EXCEPTION
+        WHEN OTHERS THEN
+            p_error_message := SQLERRM;
+    END;
+END;
+$BODY$;
+
+CREATE OR REPLACE PROCEDURE public.archive_security(
+    IN p_stock_id integer,
+    OUT p_error_message character varying
+)
+LANGUAGE 'plpgsql'
+AS $BODY$
+BEGIN
+    p_error_message := NULL;
+
+    PERFORM 1 FROM public."Список ценных бумаг" WHERE "ID ценной бумаги" = p_stock_id;
+    IF NOT FOUND THEN
+        p_error_message := 'Ценная бумага не найдена';
+        RETURN;
+    END IF;
+
+    UPDATE public."Список ценных бумаг"
+    SET "Статус архивации" = TRUE
+    WHERE "ID ценной бумаги" = p_stock_id;
 END;
 $BODY$;
 
