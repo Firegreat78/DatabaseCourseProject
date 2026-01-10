@@ -1,4 +1,27 @@
-import os
+from db.models.models import (
+    AdminRightsLevel,
+    Bank,
+    BrokerageAccount,
+    BrokerageAccountHistory,
+    BrokerageAccountOperationType,
+    Currency,
+    CurrencyRate,
+    DepositoryAccount,
+    DepositoryAccountBalance,
+    DepositoryAccountHistory,
+    DepositoryAccountOperationType,
+    EmploymentStatus,
+    Passport,
+    PriceHistory,
+    Proposal,
+    ProposalType,
+    Security,
+    Staff,
+    User,
+    VerificationStatus,
+    UserRestrictionStatus,
+    ProposalStatus
+)
 
 # postgresql+asyncpg://<username>:<password>@<host>:<port>/<database_name>
 DATABASE_URL = "postgresql+asyncpg://postgres:12345@localhost:5432/DB_Course"
@@ -15,3 +38,29 @@ BROKER_EMPLOYEE_ROLE = 3
 VERIFIER_EMPLOYEE_ROLE = 4
 SYSTEM_STAFF_ID = 2
 EMPLOYMENT_STATUS_ID_BLOCKED = 2
+
+TABLES = {
+    "admin_rights_level": AdminRightsLevel,
+    "depository_account_operation_type": DepositoryAccountOperationType,
+    "brokerage_account_operation_type": BrokerageAccountOperationType,
+    "proposal_type": ProposalType,
+    "verification_status": VerificationStatus,
+    "security": Security,
+    "currency": Currency,
+    "employment_status": EmploymentStatus,
+    "bank": Bank,
+    "user": User,
+    "staff": Staff,
+    "proposal": Proposal,
+    "proposal_type": ProposalType,
+    "proposal_status": ProposalStatus,
+    "brokerage_account": BrokerageAccount,
+    "depository_account": DepositoryAccount,
+    "passport": Passport,
+    "brokerage_account_history": BrokerageAccountHistory,
+    "depository_account_history": DepositoryAccountHistory,
+    "depository_account_balance": DepositoryAccountBalance,
+    "price_history": PriceHistory,
+    "currency_rate": CurrencyRate,
+    "user_restriction_status": UserRestrictionStatus
+}
