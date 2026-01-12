@@ -108,8 +108,6 @@ async def get_all_proposals(
     )
 
     proposals = result.scalars().all()
-
-    # Возвращаем пустой список, если заявок нет
     if not proposals:
         return []
 

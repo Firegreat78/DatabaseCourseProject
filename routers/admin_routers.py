@@ -1,10 +1,9 @@
-import re
 from datetime import date
 from decimal import Decimal
 from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, field_validator, EmailStr
+from pydantic import BaseModel
 from sqlalchemy import text, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,8 +11,9 @@ from starlette import status
 
 from core.config import MEGAADMIN_EMPLOYEE_ROLE, ADMIN_EMPLOYEE_ROLE
 from db.auth import get_current_user, get_password_hash
-from db.models import Staff, User, UserRestrictionStatus, VerificationStatus, Bank, EmploymentStatus, AdminRightsLevel
+from db.models import Staff, UserRestrictionStatus, VerificationStatus, Bank, EmploymentStatus, AdminRightsLevel
 from db.session import get_db
+
 
 async def verify_admin_role(current_user: dict = Depends(get_current_user)):
     if (current_user["type"] == "client") or (current_user["role"] not in {MEGAADMIN_EMPLOYEE_ROLE, ADMIN_EMPLOYEE_ROLE}):
@@ -440,11 +440,10 @@ async def create_stock(
         if row is None:
             raise Exception("Процедура не вернула результат")
 
-        security_id = row[0]          # OUT p_security_id
-        error_message = row[1]        # OUT p_error_message
+        security_id   = row[0]
+        error_message = row[1]
 
         if error_message is not None:
-            # Общие сообщения из процедуры
             if "Размер лота" in error_message:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Размер лота должен быть больше нуля")
             if "Валюта с ID" in error_message:
@@ -480,7 +479,6 @@ async def update_stock(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Если ничего не передано — ошибка
     if all(v is None for v in stock_data.model_dump().values()):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нет данных для обновления")
 
@@ -544,7 +542,6 @@ async def archive_stock(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # Вызываем функцию архивации
         result = await db.execute(
             text("SELECT archive_security(:stock_id, :employee_id)"),
             {
@@ -552,18 +549,13 @@ async def archive_stock(
                 "employee_id": current_user["id"]
             }
         )
-
-        # Получаем результат (ошибку или NULL)
         error_message = result.scalar()
 
-        # Если есть ошибка - возвращаем её
         if error_message is not None and error_message != "":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=error_message  # Возвращаем точное сообщение из БД
+                detail=error_message
             )
-
-        # Подтверждаем транзакцию
         await db.commit()
         return {"message": "Ценная бумага успешно архивирована"}
     except HTTPException:
@@ -580,8 +572,7 @@ async def archive_stock(
 async def update_staff(
         staff_id: int,
         data: StaffUpdate,
-        db: AsyncSession = Depends(get_db),
-        current_user: dict = Depends(get_current_user)
+        db: AsyncSession = Depends(get_db)
 ):
     # Получаем сотрудника
     result = await db.execute(
@@ -594,8 +585,6 @@ async def update_staff(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Сотрудник не найден"
         )
-
-    # Проверка уникальности логина, если логин изменяется
     if data.login is not None and data.login != staff.login:
         result_login = await db.execute(
             select(Staff).where(Staff.login == data.login, Staff.id != staff_id)
@@ -605,8 +594,6 @@ async def update_staff(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Логин уже занят"
             )
-
-    # Проверка уникальности номера трудового договора, если он изменяется
     if data.contract_number is not None and data.contract_number != staff.contract_number:
         result_contract = await db.execute(
             select(Staff).where(
@@ -621,7 +608,6 @@ async def update_staff(
             )
 
     try:
-        # Обновляем только те поля, которые переданы в запросе
         if data.login is not None:
             staff.login = data.login
 
@@ -649,7 +635,6 @@ async def update_staff(
     except IntegrityError as e:
         await db.rollback()
 
-        # Анализируем текст ошибки для определения типа нарушения
         error_msg = str(e).lower()
 
         if "номер трудового договора" in error_msg or "персонал_номер трудового догово_key" in error_msg:
@@ -663,7 +648,6 @@ async def update_staff(
                 detail=f"Логин '{data.login}' уже используется другим сотрудником"
             )
         else:
-            # Общая ошибка целостности
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Ошибка сохранения данных. Проверьте уникальность вводимых значений."
@@ -673,7 +657,7 @@ async def update_staff(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Внутренняя ошибка сервера при обновлении данных сотрудника"
+            detail=f"Внутренняя ошибка сервера при обновлении данных сотрудника: {e}"
         )
 
 @admin_router.post(
@@ -683,8 +667,7 @@ async def update_staff(
 )
 async def register_staff(
     form_data: StaffCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db)
 ):
     hashed_password = get_password_hash(form_data.password)
     try:

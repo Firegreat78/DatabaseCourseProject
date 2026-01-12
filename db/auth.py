@@ -5,6 +5,8 @@ from typing import Optional, Dict
 from jose import jwt, JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+
+from core.config import MEGAADMIN_EMPLOYEE_ROLE, ADMIN_EMPLOYEE_ROLE, BROKER_EMPLOYEE_ROLE, VERIFIER_EMPLOYEE_ROLE
 from db.models.models import User, Staff
 from fastapi import HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -12,30 +14,21 @@ from .session import get_db
 
 bearer_scheme = HTTPBearer()
 
-# Настройки
 SECRET_KEY = "your-secret-key-change-in-production-12345"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1000
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Проверяет пароль.
-    """
     password_bytes = plain_password.encode("utf-8")[:72]
     hashed_bytes = hashed_password.encode("utf-8")
     return bcrypt.checkpw(password_bytes, hashed_bytes)
 
 
 def get_password_hash(password: str) -> str:
-    """
-    Хэширует пароль с bcrypt + обрезкой до 72 байт (стандарт bcrypt).
-    """
-    # Обрезаем до 72 байт для безопасности
     password_bytes = password.encode("utf-8")[:72]
-    # salt автоматически генерируется
     hashed = bcrypt.hashpw(password_bytes, bcrypt.gensalt())
-    return hashed.decode("utf-8")  # возвращаем str для SQLAlchemy
+    return hashed.decode("utf-8")
 
 
 def create_access_token(data: Dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -70,19 +63,21 @@ async def get_current_user(
         detail="Не удалось проверить учетные данные",
         headers={"WWW-Authenticate": "Bearer"},
     )
-
     try:
         payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        sub = payload.get("sub")  # логин
-        role = payload.get("role")  # может быть число (1-5) или строка "user"
+        role = payload.get("role")
         staff_id = payload.get("staff_id")
         user_id = payload.get("user_id")
 
-        # Определяем тип пользователя по наличию staff_id или user_id
         if staff_id is not None:
-            # Это сотрудник — роль должна быть числом 1-4
-            if not isinstance(role, int) or role not in [1, 2, 3, 4]:
+            if not isinstance(role, int) or role not in [
+                MEGAADMIN_EMPLOYEE_ROLE,
+                ADMIN_EMPLOYEE_ROLE,
+                BROKER_EMPLOYEE_ROLE,
+                VERIFIER_EMPLOYEE_ROLE
+            ]:
                 raise credentials_exception
+
             user_type = "staff"
             id_to_check = staff_id
         elif user_id is not None and role == "user":
@@ -94,12 +89,11 @@ async def get_current_user(
     except JWTError:
         raise credentials_exception
 
-    # Проверка существования в БД (опционально, но рекомендуется)
     if user_type == "staff":
         exists = await db.scalar(select(Staff.id).where(Staff.id == id_to_check))
         if exists is None:
             raise credentials_exception
-    else:  # client
+    else:
         exists = await db.scalar(select(User.id).where(User.id == id_to_check))
         if exists is None:
             raise credentials_exception

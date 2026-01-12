@@ -67,7 +67,6 @@ async def update_user(
         data: UserUpdate,
         db: AsyncSession = Depends(get_db),
 ):
-    # Получаем пользователя
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
@@ -76,8 +75,6 @@ async def update_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Пользователь не найден"
         )
-
-    # Проверка логина, если передан, не пустой и изменился
     if data.login is not None and data.login.strip() != "" and data.login != user.login:
         existing_login = await db.execute(
             select(User).where(User.login == data.login, User.id != user_id)
@@ -87,8 +84,6 @@ async def update_user(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Логин уже занят"
             )
-
-    # Проверка email, если передан, не пустой и изменился
     if data.email is not None and data.email.strip() != "" and data.email != user.email:
         existing_email = await db.execute(
             select(User).where(User.email == data.email, User.id != user_id)
@@ -98,10 +93,7 @@ async def update_user(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email уже зарегистрирован"
             )
-
-    # Проверяем статусы, если переданы
     if data.verification_status_id is not None:
-        # Проверяем существование статуса
         result = await db.execute(
             select(VerificationStatus).where(VerificationStatus.id == data.verification_status_id))
         if not result.scalar_one_or_none():
@@ -118,12 +110,9 @@ async def update_user(
                 detail="Неверный статус блокировки"
             )
 
-    # Обновляем поля, которые переданы (не None)
-    # Логин обновляем только если передан и не пустой
     if data.login is not None and data.login.strip() != "":
         user.login = data.login
 
-    # Email обновляем только если передан и не пустой
     if data.email is not None and data.email.strip() != "":
         user.email = data.email
 

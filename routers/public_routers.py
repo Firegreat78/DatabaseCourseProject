@@ -22,7 +22,7 @@ class UserRegisterRequest(BaseModel):
     password: str
 
     class Config:
-        from_attributes = True  # для совместимости с SQLAlchemy 2.0
+        from_attributes = True
 
     @field_validator("password")
     @classmethod
@@ -172,8 +172,6 @@ async def login_staff(
             "staff_id": staff.id
         }
     )
-
-    # Возвращаем ВСЕ обязательные поля из модели Token
     return {
         "access_token": access_token,
         "token_type": "bearer",

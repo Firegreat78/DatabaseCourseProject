@@ -9,7 +9,7 @@ from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
-from core.config import SYSTEM_STAFF_ID, USER_BAN_STATUS_ID
+from core.config import SYSTEM_STAFF_ID, USER_BAN_STATUS_ID, BALANCE_INCREASE_ID, BALANCE_DECREASE_ID
 from db.auth import get_current_user
 from db.models import Bank, Currency, Security, BrokerageAccount, User
 from db.session import get_db
@@ -28,22 +28,20 @@ user_router = APIRouter(
     dependencies=[Depends(verify_user_role)],
 )
 
-# Схема для одной операции
 class DepositaryOperation(BaseModel):
     id: int
-    amount: Decimal  # "Сумма операции"
-    time: datetime   # "Время"
-    security_name: str  # "Наименование ценной бумаги" (получаем из JOIN с "Список ценных бумаг")
-    operation_type: str  # "Тип операции" (из "Тип операции депозитарного счёта")
+    amount: Decimal
+    time: datetime
+    security_name: str
+    operation_type: str
 
     class Config:
-        from_attributes = True  # Позволяет использовать объекты ORM (альясы, если нужно)
+        from_attributes = True
 
-# Схема для депозитарного счёта
 class DepositaryAccount(BaseModel):
     id: int
-    contract_number: str  # "Номер депозитарного договора"
-    opening_date: date     # "Дата открытия" (в формате строки, например, "2025-01-01")
+    contract_number: str
+    opening_date: date
 
     class Config:
         from_attributes = True
@@ -53,7 +51,6 @@ class DepositaryBalance(BaseModel):
     security_name: str
     amount: Decimal
 
-# Схема для ответа от эндпоинта
 class DepositaryAccountResponse(BaseModel):
     account: DepositaryAccount
     balance: List[DepositaryBalance]
@@ -99,7 +96,7 @@ class OfferCreate(BaseModel):
     account_id: int
     security_id: int
     quantity: Decimal = Field(..., gt=0, decimal_places=2)
-    proposal_type_id: int  # 1 = купить, 2 = продать
+    proposal_type_id: int
 
 class OfferResponse(BaseModel):
     id: int
@@ -199,7 +196,7 @@ async def delete_brokerage_account(
         if row is None:
             raise Exception("Процедура не вернула результат")
 
-        error_message = row[0]  # OUT p_error_message
+        error_message = row[0]
 
         if error_message is not None:
             if "не найден" in error_message or "не принадлежит" in error_message:
@@ -252,8 +249,8 @@ async def create_brokerage_account(
         if row is None:
             raise Exception("Процедура не вернула результат")
 
-        account_id = row[0]        # OUT p_account_id
-        error_message = row[1]    # OUT p_error_message
+        account_id    = row[0]
+        error_message = row[1]
 
         if error_message is not None:
             if "Банк с ID" in error_message:
@@ -275,8 +272,6 @@ async def create_brokerage_account(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=error_message
             )
-
-        # Получаем данные банка и валюты для ответа
         bank_result = await db.execute(select(Bank).where(Bank.id == account_data.bank_id))
         bank = bank_result.scalar_one()
 
@@ -403,8 +398,8 @@ async def create_passport(
         if row is None:
             raise Exception("Процедура не вернула результат")
 
-        passport_id = row[0]      # OUT p_passport_id
-        error_message = row[1]    # OUT p_error_message
+        passport_id   = row[0]
+        error_message = row[1]
 
         if error_message is not None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_message)
@@ -508,7 +503,7 @@ async def create_offer(
     if error_message is not None:
         if "не найдена" in error_message:
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail=error_message
             )
         else:
@@ -518,8 +513,6 @@ async def create_offer(
             )
 
     await db.commit()
-
-    # 6. Возвращаем созданное предложение в формате OfferResponse
     result = await db.execute(
         text("SELECT * from get_user_offers(:user_id) LIMIT 1"),
         {"user_id": user_id}
@@ -588,7 +581,6 @@ async def create_balance_change_request(
         db: AsyncSession = Depends(get_db),
         current_user=Depends(get_current_user),
 ):
-    # 1. Находим счёт и проверяем принадлежность
     account = await db.scalar(
         select(BrokerageAccount)
         .where(
@@ -602,15 +594,9 @@ async def create_balance_change_request(
             detail="Счёт не найден или не принадлежит вам"
         )
 
-    # Определяем тип операции: пополнение (1) или списание (2)
-    system_staff_id = 2  # ID системного сотрудника
-    balance_increase_id = 1  # ID типа операции "пополнение"
-    balance_decrease_id = 2  # ID типа операции "списание"
-
-    operation_type = balance_increase_id if data.amount > 0 else balance_decrease_id
+    operation_type = BALANCE_INCREASE_ID if data.amount > 0 else BALANCE_DECREASE_ID
 
     try:
-        # Вызываем функцию через SELECT (функция возвращает record)
         result = await db.execute(
             text("""
                 SELECT * FROM public.change_brokerage_account_balance(
@@ -624,20 +610,17 @@ async def create_balance_change_request(
                 "account_id": account_id,
                 "amount": data.amount,
                 "brokerage_operation_type": operation_type,
-                "staff_id": system_staff_id
+                "staff_id": SYSTEM_STAFF_ID
             }
         )
 
         row = result.fetchone()
         if row is None:
             raise Exception("Функция не вернула результат")
-
-        # Получаем результаты функции
-        operation_id = row[0]  # p_operation_id (первый OUT параметр)
-        error_message = row[1]  # p_error_message (второй OUT параметр)
+        operation_id  = row[0]
+        error_message = row[1]
 
         if error_message:
-            # Обрабатываем различные типы ошибок
             error_lower = error_message.lower()
 
             if "недостаточно" in error_lower:
@@ -656,15 +639,11 @@ async def create_balance_change_request(
                     detail="Счёт не найден"
                 )
             else:
-                # Общая ошибка
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=error_message
                 )
-
         await db.commit()
-
-        # Обновляем объект аккаунта для получения нового баланса
         await db.refresh(account)
 
         return {
@@ -681,7 +660,6 @@ async def create_balance_change_request(
     except Exception as e:
         await db.rollback()
 
-        # Проверяем, не связана ли ошибка с конкурентным доступом
         if "could not serialize access" in str(e).lower():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -857,7 +835,6 @@ async def get_brokerage_account_operations(
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # (опционально) проверка прав — счёт принадлежит пользователю
     user_id = current_user["id"]
 
     check_query = text("""
@@ -924,3 +901,31 @@ async def get_brokerage_account(
         "balance": float(row.balance),
         "currency": row.currency
     }
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    registration_date: date
+    verification_status_id: int
+    block_status_id: int
+
+    class Config:
+        from_attributes = True
+
+@user_router.get(
+    "/{user_id}",
+    response_model=UserResponse
+)
+async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(User).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+
+    return user

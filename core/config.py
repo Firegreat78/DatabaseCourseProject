@@ -39,6 +39,9 @@ VERIFIER_EMPLOYEE_ROLE = 4
 SYSTEM_STAFF_ID = 2
 EMPLOYMENT_STATUS_ID_BLOCKED = 2
 
+BALANCE_INCREASE_ID = 1
+BALANCE_DECREASE_ID = 2
+
 TABLES = {
     "admin_rights_level": AdminRightsLevel,
     "depository_account_operation_type": DepositoryAccountOperationType,

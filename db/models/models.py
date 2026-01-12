@@ -1,14 +1,13 @@
 # db/models/models.py
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
+
 from sqlalchemy import String, Integer, Numeric, Boolean, Date, ForeignKey, Column, ForeignKeyConstraint, TIMESTAMP, \
-    UniqueConstraint, DateTime, func, nullsfirst
+    UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, registry, Mapped, relationship, mapped_column
 
-from decimal import Decimal
-from datetime import datetime, date, timezone
-
-# Создаём реестр (можно и без него, но с ним типы работают лучше)
 reg = registry()
 
 
@@ -194,8 +193,6 @@ class Proposal(Base):
         nullable=False,
     )
 
-    # -------- other columns --------
-
     amount = Column("Сумма", Numeric(12, 2), nullable=False)
     amount_in_fiat = Column("Сумма в валюте", Numeric(12, 2), nullable=False)
 
@@ -243,8 +240,6 @@ class Proposal(Base):
         nullable=False,
         default=1,
     )
-
-    # -------- relationships --------
 
     brokerage_account = relationship(
         "BrokerageAccount",
@@ -396,8 +391,6 @@ class BrokerageAccountHistory(Base):
         ),
         nullable=False,
     )
-
-    # relationships
     brokerage_account = relationship(
         "BrokerageAccount",
         backref="history",
@@ -455,7 +448,6 @@ class DepositoryAccountHistory(Base):
     )
 
     __table_args__ = (
-        # FK: (ID депозитарного счёта, ID пользователя)
         ForeignKeyConstraint(
             ["ID депозитарного счёта", "ID пользователя"],
             ["Депозитарный счёт.ID депозитарного счёта", "Депозитарный счёт.ID пользователя"],
@@ -463,7 +455,6 @@ class DepositoryAccountHistory(Base):
             onupdate="CASCADE",
             name="Relationship15"
         ),
-        # FK: (ID операции бр. счёта, ID брокерского счёта)
         ForeignKeyConstraint(
             ["ID операции бр. счёта", "ID брокерского счёта"],
             [
@@ -571,11 +562,8 @@ class CurrencyRate(Base):
     rate_date: Mapped[date] = mapped_column(
         Date,
         nullable=False,
-        server_default=func.current_date(),  # соответствует DEFAULT CURRENT_DATE
+        server_default=func.current_date(),
     )
-
-    # -------- relationship --------
-
     currency: Mapped["Currency"] = relationship(
         "Currency",
         primaryjoin="foreign(CurrencyRate.currency_id) == remote(Currency.id)",
