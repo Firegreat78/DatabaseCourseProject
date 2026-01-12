@@ -20,7 +20,8 @@ async def verify_broker_role(current_user: dict = Depends(get_current_user)):
 
 broker_router = APIRouter(
     prefix="/api/broker",
-    tags=["Broker API router"]
+    tags=["Broker API router"],
+    dependencies=[Depends(verify_broker_role)]
 )
 
 class ProcessProposalRequest(BaseModel):

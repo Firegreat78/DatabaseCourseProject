@@ -35,7 +35,7 @@ async def call_verify_user_passport(
     passport_row = passport_result.fetchone()
     if not passport_row:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Паспорт пользователя не найден"
         )
     passport_id = passport_row[0]
@@ -49,7 +49,7 @@ async def call_verify_user_passport(
 
         if error_message:
             raise HTTPException(
-                status_code=400,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail=error_message
             )
 
@@ -60,7 +60,7 @@ async def call_verify_user_passport(
     except Exception as e:
         await db.rollback()
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка сервера при верификации паспорта: {e}"
         )
 
