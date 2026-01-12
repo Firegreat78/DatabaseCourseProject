@@ -1,3 +1,4 @@
+-- DB_SCRIPT.sql
 DO $$
 DECLARE
     r RECORD;

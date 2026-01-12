@@ -1,17 +1,9 @@
-from datetime import date
-
+# main.py
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 
 from core.config import *
-from db.models.models import (
-    User
-)
-from db.session import get_db
 from routers.admin_router import admin_router
 from routers.broker_router import broker_router
 from routers.charts_router import charts_router

@@ -1,3 +1,4 @@
+# routers/verifier_router.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession

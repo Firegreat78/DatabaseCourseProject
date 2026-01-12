@@ -1,3 +1,4 @@
+# core/config.py
 from db.models.models import (
     AdminRightsLevel,
     Bank,
