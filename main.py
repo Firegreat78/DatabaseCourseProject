@@ -12,13 +12,13 @@ from db.models.models import (
     User
 )
 from db.session import get_db
-from routers.admin_routers import admin_router
-from routers.broker_routers import broker_router
-from routers.charts_routers import charts_router
-from routers.public_routers import public_router
-from routers.staff_routers import staff_router
-from routers.user_routers import user_router
-from routers.verifier_routers import verifier_router
+from routers.admin_router import admin_router
+from routers.broker_router import broker_router
+from routers.charts_router import charts_router
+from routers.public_router import public_router
+from routers.staff_router import staff_router
+from routers.user_router import user_router
+from routers.verifier_router import verifier_router
 
 app = FastAPI()
 app.include_router(user_router)
