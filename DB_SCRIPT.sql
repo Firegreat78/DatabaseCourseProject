@@ -2230,6 +2230,9 @@ CREATE OR REPLACE PROCEDURE register_user(
 )
 LANGUAGE plpgsql
 AS $$
+DECLARE
+    c_unblocked_status CONSTANT INTEGER := 1;
+    c_unverified_status CONSTANT INTEGER := 1;
 BEGIN
     p_user_id := NULL;
     p_error_message := NULL;
@@ -2258,8 +2261,8 @@ BEGIN
         CURRENT_DATE,
         p_login,
         p_password,
-        1,
-        1
+        c_unverified_status,
+        c_unblocked_status
     )
     RETURNING "ID пользователя" INTO p_user_id;
 EXCEPTION
