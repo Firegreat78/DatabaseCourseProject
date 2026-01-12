@@ -228,6 +228,17 @@ BEGIN
         RAISE EXCEPTION 'Поле "Номер" должно содержать ровно 6 цифр. Текущее значение: %', NEW."Номер";
     END IF;
 
+    IF EXISTS (
+        SELECT 1
+        FROM public."Паспорт"
+        WHERE "Серия" = NEW."Серия"
+        AND "Номер" = NEW."Номер"
+        AND "Актуальность" = true
+        AND "ID паспорта" != COALESCE(NEW."ID паспорта", -1)
+    ) THEN
+        RAISE EXCEPTION 'Паспорт с серией % и номер % уже существует (актуальный)', NEW."Серия", NEW."Номер";
+    END IF;
+
     IF NEW."Пол" NOT IN ('м', 'ж') THEN
         RAISE EXCEPTION 'Поле "Пол" должно содержать только "м" или "ж". Текущее значение: %', NEW."Пол";
     END IF;
@@ -243,13 +254,16 @@ BEGIN
     IF NEW."Отчество" !~ '^[А-ЯЁ][а-яё]+$' THEN
         RAISE EXCEPTION 'Поле "Отчество" должно содержать только русские буквы, первая буква заглавная. Текущее значение: %', NEW."Отчество";
     END IF;
+
     age_years := EXTRACT(YEAR FROM AGE(CURRENT_DATE, NEW."Дата рождения"));
     IF age_years < 18 THEN
         RAISE EXCEPTION 'Возраст должен быть не менее 18 лет. Текущий возраст: % лет', age_years;
     END IF;
+
     IF (NEW."Дата выдачи" - NEW."Дата рождения") <= 365 * 14 THEN
         RAISE EXCEPTION 'Паспорт может быть выдан только лицам старше 14 лет';
     END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
