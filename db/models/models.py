@@ -534,12 +534,12 @@ class PriceHistory(Base):
 
 
 class CurrencyRate(Base):
-    __tablename__ = "currency_rate"
+    __tablename__ = "Курсы валют"
     __table_args__ = (
         UniqueConstraint(
             "currency_id",
             "rate_date",
-            name="currency_rate_currency_id_rate_date_key",
+            name="Курсы валют_currency_id_rate_date_key",
         ),
     )
 

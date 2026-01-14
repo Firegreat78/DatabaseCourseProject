@@ -750,12 +750,12 @@ CREATE TRIGGER validate_price
     FOR EACH ROW
     EXECUTE FUNCTION trg_check_history_price_positive();
 
-CREATE TABLE currency_rate (
-    id SERIAL PRIMARY KEY,
-    currency_id INT NOT NULL,
-    rate NUMERIC(20, 8) NOT NULL,
-    rate_date DATE NOT NULL DEFAULT CURRENT_DATE,
-    UNIQUE (currency_id, rate_date)
+CREATE TABLE "Курсы валют" (
+    "ID записи курса" SERIAL PRIMARY KEY,
+    "ID валюты" INT NOT NULL,
+    "Курс к рублю" NUMERIC(20, 8) NOT NULL,
+    "Дата" DATE NOT NULL DEFAULT CURRENT_DATE,
+    UNIQUE ("ID валюты", "Дата")
 );
 
 CREATE OR REPLACE FUNCTION trg_check_currency_rate_positive()
@@ -763,12 +763,8 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF NEW.rate <= 0 THEN
-        RAISE EXCEPTION 'Курс валюты должен быть положительным числом. Получено: %s', NEW.rate;
-    END IF;
-
-    IF NEW.rate IS NULL THEN
-        RAISE EXCEPTION 'Курс валюты не может быть NULL';
+    IF NEW."Курс к рублю" <= 0 THEN
+        RAISE EXCEPTION 'Курс валюты должен быть положительным числом. Получено: %s', NEW."Курс к рублю";
     END IF;
 
     RETURN NEW;
@@ -776,7 +772,7 @@ END;
 $$;
 
 CREATE TRIGGER check_rate_positive
-    BEFORE INSERT OR UPDATE ON public.currency_rate
+    BEFORE INSERT OR UPDATE ON public."Курсы валют"
     FOR EACH ROW
     EXECUTE FUNCTION trg_check_currency_rate_positive();
 
@@ -975,9 +971,9 @@ ALTER TABLE "Брокерский счёт"
     ON UPDATE CASCADE;
 
 
-ALTER TABLE currency_rate
+ALTER TABLE "Курсы валют"
 ADD CONSTRAINT "Relationship53"
-    FOREIGN KEY (currency_id)
+    FOREIGN KEY ("ID валюты")
     REFERENCES "Список валют"("ID валюты")
     ON DELETE RESTRICT
     ON UPDATE RESTRICT;
@@ -1255,12 +1251,12 @@ BEGIN
     IF p_currency1 = base_id THEN
         rate1 := 1.0;
     ELSE
-        SELECT rate, rate_date
+        SELECT "Курс к рублю", "Дата"
         INTO rate1, found_date
-        FROM currency_rate
-        WHERE currency_id = p_currency1
-          AND rate_date <= p_date
-        ORDER BY rate_date DESC
+        FROM "Курсы валют"
+        WHERE "ID валюты" = p_currency1
+          AND "Дата" <= p_date
+        ORDER BY "Дата" DESC
         LIMIT 1;
 
         IF rate1 IS NULL THEN
@@ -1277,12 +1273,12 @@ BEGIN
     IF p_currency2 = base_id THEN
         rate2 := 1.0;
     ELSE
-        SELECT rate, rate_date
+        SELECT "Курс к рублю", "Дата"
         INTO rate2, found_date
-        FROM currency_rate
-        WHERE currency_id = p_currency2
-          AND rate_date <= p_date
-        ORDER BY rate_date DESC
+        FROM "Курсы валют"
+        WHERE "ID валюты" = p_currency2
+          AND "Дата" <= p_date
+        ORDER BY "Дата" DESC
         LIMIT 1;
 
         IF rate2 IS NULL THEN
@@ -2345,9 +2341,9 @@ BEGIN
                 RETURN;
             END IF;
 
-            INSERT INTO public.currency_rate (currency_id, rate, rate_date)
+            INSERT INTO public."Курсы валют" ("ID валюты", "Курс к рублю", "Дата")
             VALUES (p_currency_id, p_new_rate_to_ruble, CURRENT_DATE)
-            ON CONFLICT (currency_id, rate_date)
+            ON CONFLICT ("ID валюты", "Дата")
             DO UPDATE SET rate = EXCLUDED.rate;
         END IF;
 
@@ -2430,8 +2426,8 @@ BEGIN
     END IF;
 
     BEGIN
-        DELETE FROM public."currency_rate"
-        WHERE "currency_rate"."currency_id" = p_currency_id;
+        DELETE FROM public."Курсы валют"
+        WHERE "Курсы валют"."ID валюты" = p_currency_id;
         GET DIAGNOSTICS v_deleted_rates_count = ROW_COUNT;
         UPDATE public."Список валют"
         SET "Статус архивации" = TRUE
@@ -2446,7 +2442,7 @@ BEGIN
             p_error_message := format('Ошибка при архивации валюты: %s', SQLERRM);
             RETURN;
     END;
-    RAISE NOTICE 'Валюта с ID %s успешно архивирована. Удалено %s записей из currency_rate', p_currency_id,
+    RAISE NOTICE 'Валюта с ID %s успешно архивирована. Удалено %s записей из таблицы "Курсы валют"', p_currency_id,
     v_deleted_rates_count;
 END;
 $BODY$;
@@ -2475,7 +2471,7 @@ BEGIN
         )
         RETURNING "ID валюты" INTO v_currency_id;
 
-        INSERT INTO public.currency_rate (currency_id, rate, rate_date)
+        INSERT INTO public."Курсы валют" ("ID валюты", "Курс к рублю", "Дата")
         VALUES (v_currency_id, p_rate_to_ruble, CURRENT_DATE);
 
         p_currency_id := v_currency_id;
