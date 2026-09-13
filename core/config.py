@@ -1,4 +1,6 @@
 # core/config.py
+import os
+
 from db.models.models import (
     AdminRightsLevel,
     Bank,
@@ -25,7 +27,7 @@ from db.models.models import (
 )
 
 # postgresql+asyncpg://<username>:<password>@<host>:<port>/<database_name>
-DATABASE_URL = "postgresql+asyncpg://postgres:12345@localhost:5432/DB_Course"
+DATABASE_URL = os.environ["DATABASE_URL"]
 HOST = "localhost"
 PORT = 8000
 

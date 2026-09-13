@@ -1,4 +1,6 @@
 # db/auth.py
+import os
+
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
@@ -14,7 +16,7 @@ from .session import get_db
 
 bearer_scheme = HTTPBearer()
 
-SECRET_KEY = "your-secret-key-change-in-production-12345"
+SECRET_KEY = os.environ["SECRET_KEY"]
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1000
 
